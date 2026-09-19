@@ -1,0 +1,7 @@
+{
+  "name": "Security Jollys",
+  "description": "Juego de cartas de ciberseguridad basado en la tríada CIA (Confidencialidad, Integridad y Disponibilidad) contra IA o 2 Jugadores.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
