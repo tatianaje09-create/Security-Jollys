@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+/* El juego ocupa toda la pantalla: sin scroll de página (evita que el celular "arrastre" el tablero) */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  touch-action: manipulation;
+}
