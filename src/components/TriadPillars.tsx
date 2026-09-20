@@ -78,7 +78,7 @@ export const TriadPillars: React.FC<TriadPillarsProps> = ({
               ? "bg-emerald-950/40 border-emerald-500/30 text-emerald-300"
               : "bg-rose-950/40 border-rose-600/40 text-rose-300/80"
           }`}
-          title="Confidencialidad: Antivirus vs Phishing"
+          title="Confidencialidad: 2FA vs Phishing"
         >
           <div className="flex items-center justify-center mb-0.5">
             <Lock className="w-3.5 h-3.5" />
@@ -94,7 +94,7 @@ export const TriadPillars: React.FC<TriadPillarsProps> = ({
               ? "bg-emerald-950/40 border-emerald-500/30 text-emerald-300"
               : "bg-rose-950/40 border-rose-600/40 text-rose-300/80"
           }`}
-          title="Integridad: 2FA vs Malware"
+          title="Integridad: Antivirus vs Malware"
         >
           <div className="flex items-center justify-center mb-0.5">
             <Database className="w-3.5 h-3.5" />

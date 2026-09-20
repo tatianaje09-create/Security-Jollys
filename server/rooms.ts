@@ -157,18 +157,18 @@ interface DefDefensa {
 
 const DEFENSAS: Record<string, DefDefensa> = {
   Antivirus: {
-    campo: "confidencialidad",
+    campo: "integridad",
     mensaje: "🛡 Defensa aplicada: Antivirus",
     titulo: "🛡 Antivirus Activo",
     detalle: (p) =>
-      `${p} detectó y eliminó el software malicioso de sus equipos, restaurando Confidencialidad (+1 ♥).`
+      `${p} detectó y eliminó el software malicioso de sus equipos, restaurando Integridad (+1 ♥).`
   },
   "2FA": {
-    campo: "integridad",
+    campo: "confidencialidad",
     mensaje: "🛡 Defensa aplicada: 2FA",
     titulo: "🔐 Doble Factor Activado",
     detalle: (p) =>
-      `${p} exigió una segunda verificación en cada acceso, recuperando Integridad (+1 ♥).`
+      `${p} exigió una segunda verificación en cada acceso, recuperando Confidencialidad (+1 ♥).`
   },
   Firewall: {
     campo: "disponibilidad",

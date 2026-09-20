@@ -60,13 +60,13 @@ export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose }) => {
               <div className="p-2 rounded bg-black/40 border border-rose-500/30">
                 <strong className="text-rose-400 block mb-1">Confidencialidad [C]</strong>
                 <p className="text-slate-400">
-                  Vulnerable a <strong>Phishing</strong>. Protegido por <strong>Antivirus</strong>.
+                  Vulnerable a <strong>Phishing</strong>. Protegido por <strong>2FA</strong>.
                 </p>
               </div>
               <div className="p-2 rounded bg-black/40 border border-amber-500/30">
                 <strong className="text-amber-400 block mb-1">Integridad [I]</strong>
                 <p className="text-slate-400">
-                  Vulnerable a <strong>Malware</strong>. Protegido por <strong>2FA</strong>.
+                  Vulnerable a <strong>Malware</strong>. Protegido por <strong>Antivirus</strong>.
                 </p>
               </div>
               <div className="p-2 rounded bg-black/40 border border-sky-500/30">

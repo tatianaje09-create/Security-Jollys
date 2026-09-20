@@ -105,6 +105,14 @@ export default function App() {
   // Turn management: true = Jugador 1, false = Jugador 2 or IA
   const [turnoJugador, setTurnoJugador] = useState<boolean>(true);
 
+  // Modo FACIL (aprendizaje): en vez de vidas, se juega a puntos. Gana quien llegue primero a 100.
+  // Cada jugada que "acierta" (ataque exitoso o defensa aplicada) suma 10 puntos a quien la jugó.
+  const [puntajeJugador, setPuntajeJugador] = useState<number>(0);
+  const [puntajeIA, setPuntajeIA] = useState<number>(0);
+  // Carta que la IA jugará en su próximo turno, anunciada de antemano al jugador para que
+  // pueda elegir con cuál de sus 3 cartas responder (solo en modo FACIL, un jugador vs IA).
+  const [cartaAnunciadaIA, setCartaAnunciadaIA] = useState<Card | null>(null);
+
   // Hands & Table counts
   const [manoJugador, setManoJugador] = useState<Card[]>([]);
   const [manoJugador2, setManoJugador2] = useState<Card[]>([]);
@@ -540,6 +548,9 @@ export default function App() {
 
     setCartasMesaJugador(3);
     setCartasMesaIA(3);
+    setPuntajeJugador(0);
+    setPuntajeIA(0);
+    setCartaAnunciadaIA(null);
 
     const m1 = repartirTresCartas();
     setManoJugador(m1);
@@ -664,12 +675,12 @@ export default function App() {
           setPropio((prev) => ({
             ...prev,
             vida: Math.min(3, prev.vida + 1),
-            confidencialidad: true
+            integridad: true
           }));
           showCentralMessage("🛡 Defensa aplicada: Antivirus");
           return {
             titulo: "🛡 Antivirus Activo",
-            detalle: `${propio.nombre} detectó y eliminó el software malicioso de sus equipos, restaurando Confidencialidad (+1 ♥).`,
+            detalle: `${propio.nombre} detectó y eliminó el software malicioso de sus equipos, restaurando Integridad (+1 ♥).`,
             exito: true,
             tipo: "DEFENSA",
             impacto: "+1 ♥ Vida"
@@ -678,12 +689,12 @@ export default function App() {
           setPropio((prev) => ({
             ...prev,
             vida: Math.min(3, prev.vida + 1),
-            integridad: true
+            confidencialidad: true
           }));
           showCentralMessage("🛡 Defensa aplicada: 2FA");
           return {
             titulo: "🔐 Doble Factor Activado",
-            detalle: `${propio.nombre} exigió una segunda verificación en cada acceso, recuperando Integridad (+1 ♥).`,
+            detalle: `${propio.nombre} exigió una segunda verificación en cada acceso, recuperando Confidencialidad (+1 ♥).`,
             exito: true,
             tipo: "DEFENSA",
             impacto: "+1 ♥ Vida"
@@ -855,6 +866,11 @@ export default function App() {
 
           setActivePlayedCard((prev) => (prev ? { ...prev, isFlipped: true, resultado: outcome } : null));
 
+          // Modo FACIL: +10 puntos cada vez que el jugador acierta una jugada (ataque exitoso o defensa aplicada)
+          if (dificultad === "FACIL" && !modoDosJugadores && esJugador1 && outcome.exito) {
+            setPuntajeJugador((prev) => Math.min(100, prev + 10));
+          }
+
           // 5. PASO 4: Se mantiene la carta y el panel explicativo visibles por 10000ms para que se alcance a leer cómodamente
           const advance = () => {
             setActivePlayedCard(null);
@@ -886,7 +902,8 @@ export default function App() {
   useEffect(() => {
     if (screen !== "JUEGO") return;
     if (online || modoDosJugadores || turnoJugador) return;
-    if (jugador.vida <= 0 || ia.vida <= 0) return;
+    // En FACIL el juego se gana por puntos, no por vidas, así que las vidas en 0 no detienen la partida.
+    if (dificultad !== "FACIL" && (jugador.vida <= 0 || ia.vida <= 0)) return;
     if (activePlayedCard) return;
 
     // Pausa de 1600ms antes de que la IA juegue para que el jugador pueda asimilar la acción anterior
@@ -895,8 +912,11 @@ export default function App() {
       let cartaElegida: Card;
 
       if (dificultad === "FACIL") {
-        const idx = Math.floor(Math.random() * MAZO_BASE.length);
-        cartaElegida = { ...MAZO_BASE[idx], id: `ia-${Date.now()}` };
+        // Se juega la misma carta que ya se le anunció al jugador, para que su elección tenga sentido.
+        cartaElegida = cartaAnunciadaIA ?? {
+          ...MAZO_BASE[Math.floor(Math.random() * MAZO_BASE.length)],
+          id: `ia-${Date.now()}`
+        };
       } else if (dificultad === "DIFICIL") {
         if (ia.vida <= 2 && exito(70)) {
           const defensas = MAZO_BASE.filter((c) => c.tipo === "DEFENSA");
@@ -942,9 +962,15 @@ export default function App() {
           const outcome = aplicarCarta(cartaElegida, jugador, setJugador, ia, setIa, true);
           setActivePlayedCard((prev) => (prev ? { ...prev, isFlipped: true, resultado: outcome } : null));
 
+          // Modo FACIL: +10 puntos para la IA si su jugada anunciada tuvo éxito
+          if (dificultad === "FACIL" && outcome.exito) {
+            setPuntajeIA((prev) => Math.min(100, prev + 10));
+          }
+
           // PASO 4: Mantener la carta y el mensaje explicativo visibles durante 10000ms para que se pueda leer todo con tranquilidad
           const advanceIA = () => {
             setActivePlayedCard(null);
+            if (dificultad === "FACIL") setCartaAnunciadaIA(null); // libera para anunciar la siguiente
             checkNuevaRonda(cartasMesaJugador, nuevoMesaIA);
             setTurnoJugador(true);
           };
@@ -961,11 +987,37 @@ export default function App() {
     }, 1600);
 
     return () => clearTimeout(timer);
-  }, [screen, modoDosJugadores, turnoJugador, jugador.vida, ia.vida, activePlayedCard, dificultad, cartasMesaJugador, cartasMesaIA]);
+  }, [screen, modoDosJugadores, turnoJugador, jugador.vida, ia.vida, activePlayedCard, dificultad, cartasMesaJugador, cartasMesaIA, cartaAnunciadaIA]);
+
+  // Modo FACIL: anuncia con antelación qué carta jugará la IA en su próximo turno, para
+  // que el jugador pueda elegir con cuál de sus 3 cartas responder.
+  useEffect(() => {
+    if (screen !== "JUEGO" || online || modoDosJugadores) return;
+    if (dificultad !== "FACIL") return;
+    if (!turnoJugador) return; // solo se anuncia mientras el jugador está decidiendo
+    if (activePlayedCard) return;
+    if (cartaAnunciadaIA) return; // ya hay una anunciada para esta ronda
+
+    const idx = Math.floor(Math.random() * MAZO_BASE.length);
+    setCartaAnunciadaIA({ ...MAZO_BASE[idx], id: `ia-anuncio-${Date.now()}` });
+  }, [screen, online, modoDosJugadores, dificultad, turnoJugador, activePlayedCard, cartaAnunciadaIA]);
 
   // Check Game Over: comprobarFinJuego()
   useEffect(() => {
     if (screen !== "JUEGO" || online) return; // en línea el final lo manda el servidor (game:over)
+
+    if (dificultad === "FACIL" && !modoDosJugadores) {
+      if (puntajeJugador >= 100) {
+        setMensajeFinJuego(`¡GANASTE! Llegaste a 100 puntos antes que la ${ia.nombre} (FACIL)`);
+        playVictorySound();
+        setScreen("FIN");
+      } else if (puntajeIA >= 100) {
+        setMensajeFinJuego(`¡PERDISTE! La ${ia.nombre} llegó a 100 puntos primero (FACIL)`);
+        playDefeatSound();
+        setScreen("FIN");
+      }
+      return;
+    }
 
     if (jugador.vida <= 0) {
       if (modoDosJugadores) {
@@ -984,7 +1036,7 @@ export default function App() {
       playVictorySound();
       setScreen("FIN");
     }
-  }, [jugador.vida, ia.vida, screen, modoDosJugadores, dificultad, jugador.nombre, ia.nombre]);
+  }, [jugador.vida, ia.vida, screen, modoDosJugadores, dificultad, jugador.nombre, ia.nombre, puntajeJugador, puntajeIA]);
 
   // Current active hand to display
   const manoActual = modoDosJugadores
@@ -1330,7 +1382,13 @@ export default function App() {
                     ? `JUGADOR 1 - ${jugador.nombre.toUpperCase()}`
                     : jugador.nombre.toUpperCase()}
                 </div>
-                {renderCorazones(jugador.vida)}
+                {dificultad === "FACIL" && !modoDosJugadores && !online ? (
+                  <div className={`font-mono font-bold text-emerald-300 ${compact ? "text-xs mt-1" : "text-base mt-2"}`}>
+                    🏆 {puntajeJugador} / 100
+                  </div>
+                ) : (
+                  renderCorazones(jugador.vida)
+                )}
               </div>
 
               {/* CENTER: lblTurno */}
@@ -1376,7 +1434,13 @@ export default function App() {
                     ? `JUGADOR 2 - ${ia.nombre.toUpperCase()}`
                     : `${ia.nombre.toUpperCase()} (${dificultad.toUpperCase()})`}
                 </div>
-                {renderCorazones(ia.vida)}
+                {dificultad === "FACIL" && !modoDosJugadores && !online ? (
+                  <div className={`font-mono font-bold text-emerald-300 ${compact ? "text-xs mt-1" : "text-base mt-2"}`}>
+                    🏆 {puntajeIA} / 100
+                  </div>
+                ) : (
+                  renderCorazones(ia.vida)
+                )}
               </div>
             </div>
 
@@ -1392,6 +1456,16 @@ export default function App() {
                 if (carta) handleJugarCarta(carta);
               }}
             />
+
+            {/* Modo FACIL: aviso de qué carta jugará la IA a continuación, para elegir con qué responder */}
+            {dificultad === "FACIL" && !modoDosJugadores && !online && turnoJugador && !activePlayedCard && cartaAnunciadaIA && (
+              <div
+                className="absolute left-1/2 top-[30%] -translate-x-1/2 z-[35] px-4 py-2 rounded-2xl bg-emerald-950/90 border border-emerald-400/60 text-emerald-200 text-xs sm:text-sm font-bold text-center pointer-events-none shadow-[0_6px_20px_rgba(0,0,0,0.7)]"
+                style={{ maxWidth: "calc(var(--vw) * 90)" }}
+              >
+                🤖 La IA jugará: {cartaAnunciadaIA.nombre} ({cartaAnunciadaIA.objetivo}) — ¡elige tu carta!
+              </div>
+            )}
 
             {/* Aviso: el rival perdió la conexión (en línea) */}
             {online && !rivalConectado && (
@@ -1500,15 +1574,6 @@ export default function App() {
                 className="w-full mb-3.5 py-3.5 px-6 rounded-xl font-bold text-xl tracking-wider text-amber-100 uppercase bg-gradient-to-b from-[#991b1b] via-[#851414] to-[#540909] border-2 border-amber-400/80 shadow-[0_6px_20px_rgba(0,0,0,0.7),inset_0_1px_1px_rgba(255,255,255,0.25)] hover:from-[#b91c1c] hover:via-[#991b1b] hover:to-[#630b0b] hover:border-amber-300 hover:shadow-[0_0_24px_rgba(251,191,36,0.5)] hover:scale-105 active:scale-95 transition-all duration-150 cursor-pointer"
               >
                 VOLVER AL INICIO
-              </button>
-
-              {/* Boton SALIR */}
-              <button
-                type="button"
-                onClick={volverAlInicio}
-                className="w-full py-2.5 px-6 rounded-xl font-bold text-base text-slate-300 uppercase bg-gradient-to-b from-[#1e2333] to-[#121520] border border-slate-500/60 hover:border-slate-400 hover:text-white hover:scale-105 active:scale-95 transition-all cursor-pointer"
-              >
-                SALIR
               </button>
             </div>
           </div>

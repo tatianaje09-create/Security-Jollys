@@ -63,8 +63,8 @@ async function startServer() {
         { id: "phishing", tipo: "ATAQUE", nombre: "Phishing", objetivo: "Confidencialidad", probabilidadBase: 60, icon: "mail" },
         { id: "ddos", tipo: "ATAQUE", nombre: "DDoS", objetivo: "Disponibilidad", probabilidadBase: 70, icon: "activity" },
         { id: "malware", tipo: "ATAQUE", nombre: "Malware", objetivo: "Integridad", probabilidadBase: 65, icon: "bug" },
-        { id: "antivirus", tipo: "DEFENSA", nombre: "Antivirus", objetivo: "Confidencialidad", efecto: "Restaura C (+1)", probabilidadBase: 100, icon: "shield" },
-        { id: "2fa", tipo: "DEFENSA", nombre: "2FA", objetivo: "Integridad", efecto: "Restaura I (+1)", probabilidadBase: 100, icon: "key" },
+        { id: "antivirus", tipo: "DEFENSA", nombre: "Antivirus", objetivo: "Integridad", efecto: "Restaura I (+1)", probabilidadBase: 100, icon: "shield" },
+        { id: "2fa", tipo: "DEFENSA", nombre: "2FA", objetivo: "Confidencialidad", efecto: "Restaura C (+1)", probabilidadBase: 100, icon: "key" },
         { id: "firewall", tipo: "DEFENSA", nombre: "Firewall", objetivo: "Disponibilidad", efecto: "Restaura D (+1)", probabilidadBase: 100, icon: "shield" },
         { id: "jolly_ataque", tipo: "JOLLY", nombre: "Jolly Ataque", objetivo: "Múltiple (C, I, D)", probabilidadBase: 35, icon: "zap" },
         { id: "jolly_defensa", tipo: "JOLLY", nombre: "Jolly Defensa", objetivo: "Recuperación Total (3 vidas)", probabilidadBase: 100, icon: "sparkles" }
