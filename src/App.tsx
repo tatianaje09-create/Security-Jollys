@@ -1080,9 +1080,10 @@ export default function App() {
 
     const idx = Math.floor(Math.random() * ATAQUES_FACIL.length);
     const cartaBase = MAZO_BASE.find((c) => c.id === ATAQUES_FACIL[idx]) ?? MAZO_BASE[0];
-    const nuevaCartaAnunciada = clonarCarta(cartaBase);
-    setCartaAnunciadaIA(nuevaCartaAnunciada);
-    setManoJugador(construirManoConContra(nuevaCartaAnunciada));
+    // OJO: se guarda con su id original (sin sufijo), porque CONTRA_DE_ATAQUE y toda la
+    // lógica de acierto/error buscan la carta por ese id exacto ("phishing", "malware", etc.).
+    setCartaAnunciadaIA(cartaBase);
+    setManoJugador(construirManoConContra(cartaBase));
   }, [screen, online, modoDosJugadores, dificultad, turnoJugador, activePlayedCard, cartaAnunciadaIA]);
 
   // Check Game Over: comprobarFinJuego()
