@@ -34,7 +34,7 @@ interface ConfigModo {
 const CONFIG_MODO: Record<Dificultad, ConfigModo> = {
   FACIL: { candidatas: 1, tiempoLimite: null },
   NORMAL: { candidatas: 2, tiempoLimite: null },
-  DIFICIL: { candidatas: 3, tiempoLimite: 5 }
+  DIFICIL: { candidatas: 3, tiempoLimite: 15 }
 };
 
 // Mapa ataque -> control correcto: Phishing-2FA, Malware-Antivirus, DDoS-Firewall, Jolly Ataque-Jolly Defensa
@@ -68,10 +68,15 @@ function mezclar<T>(arr: T[]): T[] {
 
 // Cartas de ataque (distintas entre sí) que la IA muestra antes de lanzar.
 // OJO: se guardan con su id original (sin sufijo) porque CONTRA_DE_ATAQUE busca por ese id exacto.
-function elegirAtaquesAnunciados(cantidad: number): Card[] {
-  return mezclar(ATAQUES_IDS)
-    .slice(0, cantidad)
-    .map((id) => MAZO_BASE.find((c) => c.id === id) ?? MAZO_BASE[0]);
+// Si el jugador ya tiene cartas en la mano (conserva las que no jugó), se priorizan ataques
+// cuyo control correcto SÍ esté en su mano, para que siempre pueda defenderse bien.
+function elegirAtaquesAnunciados(cantidad: number, mano: Card[] = []): Card[] {
+  const defensasEnMano = mano.map((c) => c.id.split("-")[0]);
+  const conContra = mezclar(ATAQUES_IDS.filter((a) => defensasEnMano.includes(CONTRA_DE_ATAQUE[a])));
+  const sinContra = mezclar(ATAQUES_IDS.filter((a) => !defensasEnMano.includes(CONTRA_DE_ATAQUE[a])));
+  const elegidos = [...conContra.slice(0, cantidad)];
+  elegidos.push(...sinContra.slice(0, cantidad - elegidos.length));
+  return mezclar(elegidos).map((id) => MAZO_BASE.find((c) => c.id === id) ?? MAZO_BASE[0]);
 }
 
 // Mano de 3 DEFENSAS del jugador: siempre incluye el control correcto de TODAS las cartas
@@ -122,27 +127,60 @@ function aplicarAtaqueDirecto(
   setObjetivo((prev) => ({ ...prev, vida: Math.max(0, prev.vida - 1), [pilar]: false }));
 }
 
-// Carta pequeña (solo vista) para mostrar los ataques que la IA anuncia
-const MiniCarta: React.FC<{ card: Card }> = ({ card }) => {
+// Carta pequeña (solo vista) para mostrar los ataques que la IA anuncia.
+// Aparece boca abajo y se VOLTEA (flip 3D) para revelar el ataque; "retraso" escalona varias cartas.
+const MiniCarta: React.FC<{ card: Card; retraso?: number }> = ({ card, retraso = 0 }) => {
   const [error, setError] = useState(false);
+  const [volteada, setVolteada] = useState(false);
   const borde = card.tipo === "JOLLY" ? "border-amber-400" : "border-red-500";
+
+  useEffect(() => {
+    setVolteada(false);
+    const t = setTimeout(() => {
+      if (retraso === 0) playCardFlipSound();
+      setVolteada(true);
+    }, 400 + retraso);
+    return () => clearTimeout(t);
+  }, [card.id, retraso]);
+
   return (
     <div
-      className={`rounded-lg border-2 ${borde} bg-white overflow-hidden shadow-[0_0_18px_rgba(239,68,68,0.65)] flex items-center justify-center`}
-      style={{ width: "clamp(58px, calc(var(--vh) * 11), 100px)", aspectRatio: "195 / 275" }}
-      title={`${card.nombre}: ${card.objetivo}`}
+      style={{ width: "clamp(58px, calc(var(--vh) * 11), 100px)", aspectRatio: "195 / 275", perspective: "700px" }}
+      title={volteada ? `${card.nombre}: ${card.objetivo}` : "Carta de la IA"}
     >
-      {card.rutaImagen && !error ? (
-        <img
-          src={card.rutaImagen}
-          alt={card.nombre}
-          onError={() => setError(true)}
-          className="w-full h-full object-contain select-none"
-          draggable={false}
-        />
-      ) : (
-        <span className="text-[10px] font-extrabold text-red-700 text-center px-1">{card.nombre}</span>
-      )}
+      <div
+        className="relative w-full h-full"
+        style={{
+          transformStyle: "preserve-3d",
+          transition: "transform 700ms",
+          transform: volteada ? "rotateY(0deg)" : "rotateY(180deg)"
+        }}
+      >
+        {/* Frente: el ataque */}
+        <div
+          className={`absolute inset-0 rounded-lg border-2 ${borde} bg-white overflow-hidden shadow-[0_0_18px_rgba(239,68,68,0.65)] flex items-center justify-center`}
+          style={{ backfaceVisibility: "hidden", WebkitBackfaceVisibility: "hidden" }}
+        >
+          {card.rutaImagen && !error ? (
+            <img
+              src={card.rutaImagen}
+              alt={card.nombre}
+              onError={() => setError(true)}
+              className="w-full h-full object-contain select-none"
+              draggable={false}
+            />
+          ) : (
+            <span className="text-[10px] font-extrabold text-red-700 text-center px-1">{card.nombre}</span>
+          )}
+        </div>
+        {/* Dorso */}
+        <div
+          className="absolute inset-0 rounded-lg border-2 border-amber-400/80 bg-[#12141c] overflow-hidden shadow-[0_6px_16px_rgba(0,0,0,0.9)]"
+          style={{ backfaceVisibility: "hidden", WebkitBackfaceVisibility: "hidden", transform: "rotateY(180deg)" }}
+        >
+          <img src="/img/dorso.png" alt="Dorso" className="w-full h-full object-cover" draggable={false} />
+        </div>
+      </div>
     </div>
   );
 };
@@ -666,11 +704,13 @@ export default function App() {
 
   // 1 JUGADOR: prepara una ronda nueva. La IA anuncia sus cartas de ataque, decide en secreto
   // cuál lanzará y el jugador recibe 3 defensas (con el control correcto de cada ataque anunciado).
-  const prepararRonda = (nivel: Dificultad, jug: PlayerEntity) => {
-    const anunciados = elegirAtaquesAnunciados(CONFIG_MODO[nivel].candidatas);
+  // manoConservada: defensas que el jugador aún tiene sin jugar. Si está vacía (inicio de partida o
+  // nueva ronda de mesa) se reparten 3 defensas nuevas; si no, se sigue con las que quedan (2, luego 1).
+  const prepararRonda = (nivel: Dificultad, jug: PlayerEntity, manoConservada: Card[] = []) => {
+    const anunciados = elegirAtaquesAnunciados(CONFIG_MODO[nivel].candidatas, manoConservada);
     setAtaquesAnunciados(anunciados);
     setAtaqueReal(elegirAtaqueReal(anunciados, nivel, jug));
-    setManoJugador(construirManoDefensas(anunciados));
+    setManoJugador(manoConservada.length > 0 ? manoConservada : construirManoDefensas(anunciados));
     setTiempoRestante(CONFIG_MODO[nivel].tiempoLimite);
     rondaResueltaRef.current = false;
   };
@@ -982,9 +1022,12 @@ export default function App() {
     const nuevaMesaJugador = Math.max(0, cartasMesaJugador - 1);
     const nuevaMesaIA = Math.max(0, cartasMesaIA - 1);
 
-    // 1. La defensa jugada sale de la mano y ambos gastan una carta de la mesa
-    if (carta) setManoJugador((prev) => prev.filter((c) => c.id !== carta.id));
-    else playCardPlaySound();
+    // 1. La defensa jugada sale de la mano y ambos gastan una carta de la mesa.
+    // Sin tiempo (carta = null) se descarta una carta al azar para que la mano siga igual que la mesa.
+    const descartada = carta ?? manoJugador[Math.floor(Math.random() * manoJugador.length)] ?? null;
+    const manoRestante = manoJugador.filter((c) => c.id !== descartada?.id);
+    setManoJugador(manoRestante);
+    if (!carta) playCardPlaySound();
     setCartasMesaJugador(nuevaMesaJugador);
     setCartasMesaIA(nuevaMesaIA);
 
@@ -1039,7 +1082,9 @@ export default function App() {
             titulo: carta ? `❌ ¡${real.nombre} impactó!` : `⏱ ¡Sin tiempo! ${real.nombre} impactó`,
             detalle: `${
               carta ? `Jugaste ${carta.nombre}, pero el control correcto era ${cartaContra?.nombre ?? "otro"}.` : `No elegiste defensa a tiempo; el control correcto era ${cartaContra?.nombre ?? "otro"}.`
-            }${mostradas} Se comprometió ${pilarAfectado}.${facil ? " La IA suma 10 puntos." : " Pierdes 1 vida."}`,
+            }${mostradas} Se comprometió ${pilarAfectado}.${facil ? " La IA suma 10 puntos." : " Pierdes 1 vida."}${
+              !carta && descartada ? ` Se descarta ${descartada.nombre} de tu mano.` : ""
+            }`,
             exito: false,
             tipo: real.tipo,
             impacto: facil ? "IA +10 puntos" : "-1 ♥ Vida"
@@ -1051,7 +1096,9 @@ export default function App() {
         // 5. Resultado visible 10 s (o hasta pulsar Continuar); después arranca la siguiente ronda
         const advance = () => {
           setActivePlayedCard(null);
-          prepararRonda(nivel, jugadorRef.current);
+          // Con la mesa agotada empieza una ronda nueva (3 cartas); si no, se conservan las que quedan
+          const mesaAgotada = nuevaMesaJugador <= 0 && nuevaMesaIA <= 0;
+          prepararRonda(nivel, jugadorRef.current, mesaAgotada ? [] : manoRestante);
           checkNuevaRonda(nuevaMesaJugador, nuevaMesaIA);
         };
         pendingTurnAdvanceRef.current = advance;
@@ -1655,14 +1702,14 @@ export default function App() {
                   — ¡elige tu defensa!
                 </div>
                 <div className="flex items-end justify-center gap-3">
-                  {ataquesAnunciados.map((c) => (
-                    <MiniCarta key={c.id} card={c} />
+                  {ataquesAnunciados.map((c, i) => (
+                    <MiniCarta key={c.id} card={c} retraso={i * 300} />
                   ))}
                 </div>
                 {tiempoRestante !== null && (
                   <div
                     className={`px-4 py-1 rounded-full border font-mono font-black text-sm sm:text-base shadow-[0_6px_20px_rgba(0,0,0,0.7)] ${
-                      tiempoRestante <= 2
+                      tiempoRestante <= 5
                         ? "bg-rose-950/95 border-rose-400 text-rose-200 animate-pulse"
                         : "bg-black/80 border-amber-400/70 text-amber-200"
                     }`}

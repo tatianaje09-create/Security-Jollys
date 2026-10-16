@@ -129,9 +129,10 @@ export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose }) => {
               <li>La IA solo lanza cartas de <strong>ataque</strong> y tú solo recibes cartas de <strong>defensa</strong> (3 por ronda).</li>
               <li>Cada ronda la IA muestra sus cartas de ataque y lanza <strong>una</strong> de ellas; tú eliges con qué control responder.</li>
               <li>Defensa correcta (Phishing→2FA, Malware→Antivirus, DDoS→Firewall, Jolly Ataque→Jolly Defensa): el ataque se bloquea. Defensa incorrecta: el ataque impacta.</li>
+              <li>Las defensas que no juegas se conservan: en cada ronda de mesa juegas con 3, luego 2 y luego 1 carta, y al empezar la siguiente ronda recibes 3 nuevas.</li>
               <li><strong>Fácil:</strong> la IA muestra 1 carta (sabes exactamente qué viene). Gana quien llegue primero a 100 puntos (+10 por ronda ganada).</li>
               <li><strong>Normal:</strong> la IA muestra 2 cartas y lanza una al azar (50 % / 50 %). Se juega a vidas: bloquear le quita 1 ♥ a la IA; fallar te quita 1 ♥ a ti.</li>
-              <li><strong>Difícil:</strong> la IA muestra 3 cartas, tienes 5 segundos para elegir y la IA prefiere atacar un pilar que ya tengas comprometido. Se juega a vidas.</li>
+              <li><strong>Difícil:</strong> la IA muestra 3 cartas, tienes 15 segundos para elegir y la IA prefiere atacar un pilar que ya tengas comprometido. Se juega a vidas.</li>
             </ul>
           </div>
 
