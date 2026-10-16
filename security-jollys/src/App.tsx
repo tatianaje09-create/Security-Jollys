@@ -17,41 +17,93 @@ import {
 } from "./types";
 import { MAZO_BASE, repartirTresCartas } from "./utils/gameData";
 
-// --- Modo FÁCIL (aprendizaje por puntos) ---------------------------------
-// Mapa ataque -> control correcto, según la tabla: Phishing-2FA, Malware-Antivirus, DDoS-Firewall, Jolly Ataque-Jolly Defensa
+// --- Modos de 1 JUGADOR (vs IA): la IA SOLO ATACA y el jugador SOLO DEFIENDE ---------
+// (el modo 2 jugadores no usa nada de esto)
+//
+// Cada ronda: la IA anuncia N cartas de ataque y lanza UNA de ellas (escogida al azar). El
+// jugador tiene 3 defensas y elige con cuál responder:
+//   FÁCIL   -> 1 carta anunciada  (100 % de acierto si eliges bien). Gana quien llegue a 100 puntos.
+//   NORMAL  -> 2 cartas anunciadas (50 / 50 de que la IA lance una u otra). Se juega a vidas.
+//   DIFÍCIL -> 3 cartas anunciadas + tiempo límite + la IA ataca donde más débil estás. Vidas.
+// Defensa correcta = el ataque se bloquea (y en NORMAL/DIFÍCIL la IA pierde 1 ♥).
+// Defensa incorrecta (o se acaba el tiempo) = el ataque impacta (-1 ♥ y pilar comprometido).
+interface ConfigModo {
+  candidatas: number; // cuántas cartas de ataque muestra la IA antes de lanzar
+  tiempoLimite: number | null; // segundos para elegir defensa (null = sin límite)
+}
+const CONFIG_MODO: Record<Dificultad, ConfigModo> = {
+  FACIL: { candidatas: 1, tiempoLimite: null },
+  NORMAL: { candidatas: 2, tiempoLimite: null },
+  DIFICIL: { candidatas: 3, tiempoLimite: 5 }
+};
+
+// Mapa ataque -> control correcto: Phishing-2FA, Malware-Antivirus, DDoS-Firewall, Jolly Ataque-Jolly Defensa
 const CONTRA_DE_ATAQUE: Record<string, string> = {
   phishing: "2FA",
   malware: "antivirus",
   ddos: "firewall",
   jolly_ataque: "jolly_defensa"
 };
-const ATAQUES_FACIL = ["phishing", "malware", "ddos", "jolly_ataque"];
+const ATAQUES_IDS = ["phishing", "malware", "ddos", "jolly_ataque"];
+const DEFENSAS_IDS = ["2FA", "antivirus", "firewall", "jolly_defensa"];
+type Pilar = "confidencialidad" | "integridad" | "disponibilidad";
+const PILAR_DE_ATAQUE: Record<string, Pilar> = {
+  phishing: "confidencialidad",
+  malware: "integridad",
+  ddos: "disponibilidad"
+};
 
 function clonarCarta(base: Card): Card {
   return { ...base, id: `${base.id}-${Date.now()}-${Math.random().toString(36).slice(2)}` };
 }
 
-// Arma la mano de 3 cartas del jugador garantizando que el control correcto para
-// el ataque anunciado por la IA esté siempre entre ellas.
-function construirManoConContra(cartaAtaque: Card): Card[] {
-  const contraId = CONTRA_DE_ATAQUE[cartaAtaque.id];
-  const cartaContra = MAZO_BASE.find((c) => c.id === contraId) ?? MAZO_BASE[0];
-  const otras = MAZO_BASE.filter((c) => c.id !== contraId);
-  const mano: Card[] = [clonarCarta(cartaContra)];
-  while (mano.length < 3) {
-    const pick = otras[Math.floor(Math.random() * otras.length)];
-    mano.push(clonarCarta(pick));
-  }
-  // Mezclar para que el control correcto no quede siempre en la misma posición
-  for (let i = mano.length - 1; i > 0; i--) {
+function mezclar<T>(arr: T[]): T[] {
+  const copia = [...arr];
+  for (let i = copia.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [mano[i], mano[j]] = [mano[j], mano[i]];
+    [copia[i], copia[j]] = [copia[j], copia[i]];
   }
-  return mano;
+  return copia;
 }
 
-// Aplica el impacto directo (sin probabilidad) del ataque anunciado sobre el jugador,
-// usado cuando en modo FÁCIL el jugador responde con el control incorrecto.
+// Cartas de ataque (distintas entre sí) que la IA muestra antes de lanzar.
+// OJO: se guardan con su id original (sin sufijo) porque CONTRA_DE_ATAQUE busca por ese id exacto.
+function elegirAtaquesAnunciados(cantidad: number): Card[] {
+  return mezclar(ATAQUES_IDS)
+    .slice(0, cantidad)
+    .map((id) => MAZO_BASE.find((c) => c.id === id) ?? MAZO_BASE[0]);
+}
+
+// Mano de 3 DEFENSAS del jugador: siempre incluye el control correcto de TODAS las cartas
+// anunciadas (así elegir es una decisión real) y se completa con otras defensas distintas.
+function construirManoDefensas(anunciados: Card[]): Card[] {
+  const ids = anunciados.map((a) => CONTRA_DE_ATAQUE[a.id]);
+  const otras = mezclar(DEFENSAS_IDS.filter((id) => !ids.includes(id)));
+  while (ids.length < 3) ids.push(otras.shift() as string);
+  return mezclar(ids).map((id) => clonarCarta(MAZO_BASE.find((c) => c.id === id) ?? MAZO_BASE[0]));
+}
+
+// Cuál de las cartas anunciadas lanza de verdad la IA.
+// FÁCIL / NORMAL: al azar, todas con la misma probabilidad (en NORMAL = 50 / 50).
+// DIFÍCIL: la IA "huele sangre": favorece el ataque a un pilar que ya tienes caído.
+function elegirAtaqueReal(anunciados: Card[], nivel: Dificultad, jug: PlayerEntity): Card {
+  if (nivel !== "DIFICIL") return anunciados[Math.floor(Math.random() * anunciados.length)];
+  const caidos = [jug.confidencialidad, jug.integridad, jug.disponibilidad].filter((ok) => !ok).length;
+  const pesos = anunciados.map((c) => {
+    const pilar = PILAR_DE_ATAQUE[c.id];
+    if (!pilar) return 1 + caidos; // el Jolly gana peso cuantos más pilares tengas caídos
+    return jug[pilar] ? 1 : 3; // pilar ya comprometido: 3 veces más probable
+  });
+  let tirada = Math.random() * pesos.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < anunciados.length; i++) {
+    tirada -= pesos[i];
+    if (tirada < 0) return anunciados[i];
+  }
+  return anunciados[anunciados.length - 1];
+}
+
+// Aplica el impacto del ataque lanzado por la IA sobre el jugador (sin probabilidad):
+// ocurre cuando el jugador responde con el control incorrecto o se le acaba el tiempo.
 function aplicarAtaqueDirecto(
   atacante: Card,
   setObjetivo: React.Dispatch<React.SetStateAction<PlayerEntity>>
@@ -66,10 +118,34 @@ function aplicarAtaqueDirecto(
     }));
     return;
   }
-  const pilar: "confidencialidad" | "integridad" | "disponibilidad" =
-    atacante.id === "phishing" ? "confidencialidad" : atacante.id === "malware" ? "integridad" : "disponibilidad";
+  const pilar = PILAR_DE_ATAQUE[atacante.id];
   setObjetivo((prev) => ({ ...prev, vida: Math.max(0, prev.vida - 1), [pilar]: false }));
 }
+
+// Carta pequeña (solo vista) para mostrar los ataques que la IA anuncia
+const MiniCarta: React.FC<{ card: Card }> = ({ card }) => {
+  const [error, setError] = useState(false);
+  const borde = card.tipo === "JOLLY" ? "border-amber-400" : "border-red-500";
+  return (
+    <div
+      className={`rounded-lg border-2 ${borde} bg-white overflow-hidden shadow-[0_0_18px_rgba(239,68,68,0.65)] flex items-center justify-center`}
+      style={{ width: "clamp(58px, calc(var(--vh) * 11), 100px)", aspectRatio: "195 / 275" }}
+      title={`${card.nombre}: ${card.objetivo}`}
+    >
+      {card.rutaImagen && !error ? (
+        <img
+          src={card.rutaImagen}
+          alt={card.nombre}
+          onError={() => setError(true)}
+          className="w-full h-full object-contain select-none"
+          draggable={false}
+        />
+      ) : (
+        <span className="text-[10px] font-extrabold text-red-700 text-center px-1">{card.nombre}</span>
+      )}
+    </div>
+  );
+};
 // ---------------------------------------------------------------------------
 
 import { 
@@ -158,6 +234,10 @@ export default function App() {
     disponibilidad: true
   });
 
+  // Copia siempre actualizada del jugador, para leerla desde temporizadores (p. ej. al preparar la siguiente ronda)
+  const jugadorRef = useRef<PlayerEntity>(jugador);
+  jugadorRef.current = jugador;
+
   // Turn management: true = Jugador 1, false = Jugador 2 or IA
   const [turnoJugador, setTurnoJugador] = useState<boolean>(true);
 
@@ -167,7 +247,12 @@ export default function App() {
   const [puntajeIA, setPuntajeIA] = useState<number>(0);
   // Carta que la IA jugará en su próximo turno, anunciada de antemano al jugador para que
   // pueda elegir con cuál de sus 3 cartas responder (solo en modo FACIL, un jugador vs IA).
-  const [cartaAnunciadaIA, setCartaAnunciadaIA] = useState<Card | null>(null);
+  const [ataquesAnunciados, setAtaquesAnunciados] = useState<Card[]>([]);
+  // Cuál de las anunciadas lanza de verdad la IA (se revela al responder el jugador)
+  const [ataqueReal, setAtaqueReal] = useState<Card | null>(null);
+  // Segundos que le quedan al jugador para elegir defensa (solo DIFÍCIL; null = sin límite)
+  const [tiempoRestante, setTiempoRestante] = useState<number | null>(null);
+  const rondaResueltaRef = useRef<boolean>(false);
 
   // Hands & Table counts
   const [manoJugador, setManoJugador] = useState<Card[]>([]);
@@ -579,6 +664,17 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 1 JUGADOR: prepara una ronda nueva. La IA anuncia sus cartas de ataque, decide en secreto
+  // cuál lanzará y el jugador recibe 3 defensas (con el control correcto de cada ataque anunciado).
+  const prepararRonda = (nivel: Dificultad, jug: PlayerEntity) => {
+    const anunciados = elegirAtaquesAnunciados(CONFIG_MODO[nivel].candidatas);
+    setAtaquesAnunciados(anunciados);
+    setAtaqueReal(elegirAtaqueReal(anunciados, nivel, jug));
+    setManoJugador(construirManoDefensas(anunciados));
+    setTiempoRestante(CONFIG_MODO[nivel].tiempoLimite);
+    rondaResueltaRef.current = false;
+  };
+
   // Start game flow: iniciarJuego(boolean dosJugadores, Dificultad dif)
   const iniciarJuego = (dosJugadores: boolean, nivel: Dificultad) => {
     playButtonClick();
@@ -606,16 +702,24 @@ export default function App() {
     setCartasMesaIA(3);
     setPuntajeJugador(0);
     setPuntajeIA(0);
-    setCartaAnunciadaIA(null);
-
-    const m1 = repartirTresCartas();
-    setManoJugador(m1);
+    setAtaquesAnunciados([]);
+    setAtaqueReal(null);
+    setTiempoRestante(null);
 
     if (dosJugadores) {
-      const m2 = repartirTresCartas();
-      setManoJugador2(m2);
+      // 2 JUGADORES: cada uno con 3 cartas al azar del mazo completo (sin cambios)
+      setManoJugador(repartirTresCartas());
+      setManoJugador2(repartirTresCartas());
     } else {
+      // 1 JUGADOR: la IA anuncia sus ataques y el jugador recibe solo defensas
       setManoJugador2([]);
+      prepararRonda(nivel, {
+        nombre: "Empresa A",
+        vida: 3,
+        confidencialidad: true,
+        integridad: true,
+        disponibilidad: true
+      });
     }
 
     setTurnoJugador(true);
@@ -858,6 +962,109 @@ export default function App() {
     }
   };
 
+  // ======================================================================
+  // 1 JUGADOR (FÁCIL / NORMAL / DIFÍCIL): la IA solo ataca, el jugador solo defiende.
+  // Resuelve la ronda: la IA revela el ataque que lanza de verdad y se compara con la
+  // defensa elegida (carta = null significa que se acabó el tiempo en DIFÍCIL).
+  // ======================================================================
+  const resolverRonda = (carta: Card | null) => {
+    const real = ataqueReal;
+    if (!real || rondaResueltaRef.current) return;
+    rondaResueltaRef.current = true;
+    setTiempoRestante(null);
+
+    const nivel = dificultad;
+    const facil = nivel === "FACIL";
+    const anunciados = ataquesAnunciados;
+    const contraId = CONTRA_DE_ATAQUE[real.id];
+    const cartaContra = MAZO_BASE.find((c) => c.id === contraId);
+    const acierto = !!carta && carta.id.split("-")[0] === contraId;
+    const nuevaMesaJugador = Math.max(0, cartasMesaJugador - 1);
+    const nuevaMesaIA = Math.max(0, cartasMesaIA - 1);
+
+    // 1. La defensa jugada sale de la mano y ambos gastan una carta de la mesa
+    if (carta) setManoJugador((prev) => prev.filter((c) => c.id !== carta.id));
+    else playCardPlaySound();
+    setCartasMesaJugador(nuevaMesaJugador);
+    setCartasMesaIA(nuevaMesaIA);
+
+    // 2. La IA pone su carta boca abajo
+    setActivePlayedCard({ card: real, playedBy: "IA", isFlipped: false });
+
+    // 3. A los 450ms la voltea y revela qué ataque lanzó de verdad
+    setTimeout(() => {
+      playCardFlipSound();
+      setActivePlayedCard((prev) => (prev ? { ...prev, isFlipped: true } : null));
+
+      // 4. Tras voltearse (550ms) se aplica el resultado
+      setTimeout(() => {
+        const mostradas =
+          anunciados.length > 1
+            ? ` La IA tenía en la mira: ${anunciados.map((c) => c.nombre).join(" / ")}.`
+            : "";
+        let outcome: CardActionOutcome;
+
+        if (acierto && carta) {
+          // Defensa correcta: el ataque se bloquea y el pilar queda protegido
+          if (real.id === "jolly_ataque") {
+            playJollySound();
+            setJugador((prev) => ({ ...prev, confidencialidad: true, integridad: true, disponibilidad: true }));
+          } else {
+            playDefenseSound();
+            const pilar = PILAR_DE_ATAQUE[real.id];
+            setJugador((prev) => ({ ...prev, [pilar]: true }));
+          }
+          if (facil) {
+            setPuntajeJugador((prev) => Math.min(100, prev + 10));
+          } else {
+            setIa((prev) => ({ ...prev, vida: Math.max(0, prev.vida - 1) }));
+          }
+          outcome = {
+            titulo: `🛡 ¡${carta.nombre} bloqueó el ${real.nombre}!`,
+            detalle: `La IA lanzó ${real.nombre} (${real.objetivo}) y ${carta.nombre} era el control correcto.${mostradas} ${
+              facil ? "Sumas 10 puntos." : `El ataque se neutraliza y la ${ia.nombre} pierde 1 vida por el contraataque.`
+            }`,
+            exito: true,
+            tipo: "DEFENSA",
+            impacto: facil ? "+10 puntos" : "IA -1 ♥ Vida"
+          };
+        } else {
+          // Defensa incorrecta (o sin tiempo): el ataque impacta
+          if (real.id === "jolly_ataque") playJollySound();
+          playAttackHitSound();
+          aplicarAtaqueDirecto(real, setJugador);
+          if (facil) setPuntajeIA((prev) => Math.min(100, prev + 10));
+          const pilarAfectado = real.id === "jolly_ataque" ? "toda la tríada CIA" : `la ${real.objetivo.replace("Ataca ", "")}`;
+          outcome = {
+            titulo: carta ? `❌ ¡${real.nombre} impactó!` : `⏱ ¡Sin tiempo! ${real.nombre} impactó`,
+            detalle: `${
+              carta ? `Jugaste ${carta.nombre}, pero el control correcto era ${cartaContra?.nombre ?? "otro"}.` : `No elegiste defensa a tiempo; el control correcto era ${cartaContra?.nombre ?? "otro"}.`
+            }${mostradas} Se comprometió ${pilarAfectado}.${facil ? " La IA suma 10 puntos." : " Pierdes 1 vida."}`,
+            exito: false,
+            tipo: real.tipo,
+            impacto: facil ? "IA +10 puntos" : "-1 ♥ Vida"
+          };
+        }
+
+        setActivePlayedCard((prev) => (prev ? { ...prev, isFlipped: true, resultado: outcome } : null));
+
+        // 5. Resultado visible 10 s (o hasta pulsar Continuar); después arranca la siguiente ronda
+        const advance = () => {
+          setActivePlayedCard(null);
+          prepararRonda(nivel, jugadorRef.current);
+          checkNuevaRonda(nuevaMesaJugador, nuevaMesaIA);
+        };
+        pendingTurnAdvanceRef.current = advance;
+        turnAdvanceTimerRef.current = setTimeout(() => {
+          if (pendingTurnAdvanceRef.current === advance) {
+            advance();
+            pendingTurnAdvanceRef.current = null;
+          }
+        }, 10000);
+      }, 550);
+    }, 450);
+  };
+
   // Handle Player Action: jugarCarta(Carta carta) with 3D Flip Animation (Reverso -> Volteo -> Frente)
   const handleJugarCarta = (carta: Card) => {
     if (online) {
@@ -878,6 +1085,21 @@ export default function App() {
       return;
     }
     if (animatingCardId || activePlayedCard) return; // Prevent double trigger
+
+    // 1 JUGADOR: el jugador solo defiende; la IA ya tiene su ataque decidido
+    if (!modoDosJugadores) {
+      if (carta.tipo === "ATAQUE" || rondaResueltaRef.current || !ataqueReal) return;
+      playCardPlaySound();
+      setTiempoRestante(null); // se detiene el reloj en cuanto eliges
+      setAnimatingCardId(carta.id);
+      setTimeout(() => {
+        setAnimatingCardId(null);
+        resolverRonda(carta);
+      }, 200);
+      return;
+    }
+
+    // ---- 2 JUGADORES (local, mismo dispositivo): sin cambios ----
     playCardPlaySound();
 
     // Trigger animation in player's hand
@@ -887,11 +1109,7 @@ export default function App() {
       setAnimatingCardId(null);
 
       const esJugador1 = turnoJugador;
-      const nombreQuienLanza = esJugador1
-        ? modoDosJugadores
-          ? "JUGADOR 1"
-          : jugador.nombre
-        : "JUGADOR 2";
+      const nombreQuienLanza = esJugador1 ? "JUGADOR 1" : "JUGADOR 2";
 
       // 1. Quitar carta de la mano y descontar carta de la mesa
       if (esJugador1) {
@@ -916,39 +1134,9 @@ export default function App() {
 
         // 4. PASO 3: Tras voltearse (550ms), se aplica el efecto en las vidas/estados
         setTimeout(() => {
-          const esRondaFacil =
-            dificultad === "FACIL" && !modoDosJugadores && esJugador1 && !!cartaAnunciadaIA;
-
-          let outcome: CardActionOutcome;
-
-          if (esRondaFacil && cartaAnunciadaIA) {
-            const contraId = CONTRA_DE_ATAQUE[cartaAnunciadaIA.id];
-            const cartaContra = MAZO_BASE.find((c) => c.id === contraId);
-            const acierto = carta.id.split("-")[0] === contraId;
-
-            if (acierto) {
-              // Control correcto: aplica la defensa sobre el propio jugador y suma 10 puntos
-              outcome = aplicarCarta(carta, ia, setIa, jugador, setJugador, false);
-              setPuntajeJugador((prev) => Math.min(100, prev + 10));
-            } else {
-              // Control incorrecto: el ataque anunciado por la IA impacta directamente
-              aplicarAtaqueDirecto(cartaAnunciadaIA, setJugador);
-              playAttackHitSound();
-              showCentralMessage(`❌ Control incorrecto: ${cartaAnunciadaIA.nombre} impactó`);
-              outcome = {
-                titulo: "❌ Control Incorrecto",
-                detalle: `La IA atacó con ${cartaAnunciadaIA.nombre}. El control correcto era ${cartaContra?.nombre ?? "otro"}, pero jugaste ${carta.nombre}, así que el ataque impactó de lleno.`,
-                exito: false,
-                tipo: "ATAQUE",
-                impacto: "-1 ♥ Vida"
-              };
-              setPuntajeIA((prev) => Math.min(100, prev + 10));
-            }
-          } else {
-            outcome = esJugador1
-              ? aplicarCarta(carta, ia, setIa, jugador, setJugador, false)
-              : aplicarCarta(carta, jugador, setJugador, ia, setIa, false);
-          }
+          const outcome = esJugador1
+            ? aplicarCarta(carta, ia, setIa, jugador, setJugador, false)
+            : aplicarCarta(carta, jugador, setJugador, ia, setIa, false);
 
           setActivePlayedCard((prev) => (prev ? { ...prev, isFlipped: true, resultado: outcome } : null));
 
@@ -957,18 +1145,9 @@ export default function App() {
             setActivePlayedCard(null);
 
             if (esJugador1) {
-              if (esRondaFacil) {
-                // En FACIL cada ronda la resuelve el jugador de una vez: se limpia la mano
-                // (se regenera junto a la próxima carta anunciada) y se sigue en su turno.
-                setManoJugador([]);
-                setCartaAnunciadaIA(null);
-                setCartasMesaIA((prevMesaIA) => Math.max(0, prevMesaIA - 1));
-                checkNuevaRonda(Math.max(0, cartasMesaJugador - 1), Math.max(0, cartasMesaIA - 1));
-              } else {
-                setManoJugador((prev) => (prev.length === 0 ? repartirTresCartas() : prev));
-                checkNuevaRonda(cartasMesaJugador - 1, cartasMesaIA);
-                setTurnoJugador(false);
-              }
+              setManoJugador((prev) => (prev.length === 0 ? repartirTresCartas() : prev));
+              checkNuevaRonda(cartasMesaJugador - 1, cartasMesaIA);
+              setTurnoJugador(false);
             } else {
               setManoJugador2((prev) => (prev.length === 0 ? repartirTresCartas() : prev));
               checkNuevaRonda(cartasMesaJugador, cartasMesaIA - 1);
@@ -988,107 +1167,26 @@ export default function App() {
     }, 200);
   };
 
-  // AI Turn effect: ejecutarTurnoIA() with 3D Flip Reveal and clear reading time
-  useEffect(() => {
-    if (screen !== "JUEGO") return;
-    if (online || modoDosJugadores || turnoJugador) return;
-    // En FACIL cada ronda se resuelve por completo cuando el jugador juega su carta
-    // (ver handleJugarCarta), así que la IA no tiene un turno propio aparte.
-    if (dificultad === "FACIL") return;
-    if (jugador.vida <= 0 || ia.vida <= 0) return;
-    if (activePlayedCard) return;
-
-    // Pausa de 1600ms antes de que la IA juegue para que el jugador pueda asimilar la acción anterior
-    const timer = setTimeout(() => {
-      // Pick AI card based on difficulty (from Java ejecutarTurnoIA)
-      let cartaElegida: Card;
-
-      if (dificultad === "DIFICIL") {
-        if (ia.vida <= 2 && exito(70)) {
-          const defensas = MAZO_BASE.filter((c) => c.tipo === "DEFENSA");
-          cartaElegida = defensas[Math.floor(Math.random() * defensas.length)];
-        } else if (jugador.vida <= 2 && exito(50)) {
-          const fuertes = MAZO_BASE.filter((c) => c.nombre === "Jolly Ataque" || c.nombre === "DDoS");
-          cartaElegida = fuertes[Math.floor(Math.random() * fuertes.length)];
-        } else if (exito(70)) {
-          const ataques = MAZO_BASE.filter((c) => c.tipo === "ATAQUE");
-          cartaElegida = ataques[Math.floor(Math.random() * ataques.length)];
-        } else {
-          cartaElegida = MAZO_BASE[Math.floor(Math.random() * MAZO_BASE.length)];
-        }
-      } else {
-        // NORMAL
-        if (ia.vida <= 1) {
-          cartaElegida = MAZO_BASE.find((c) => c.nombre === "2FA") || MAZO_BASE[0];
-        } else if (jugador.vida <= 1) {
-          cartaElegida = MAZO_BASE.find((c) => c.nombre === "DDoS") || MAZO_BASE[0];
-        } else {
-          cartaElegida = MAZO_BASE[Math.floor(Math.random() * MAZO_BASE.length)];
-        }
-      }
-
-      playCardPlaySound();
-      const nuevoMesaIA = Math.max(0, cartasMesaIA - 1);
-      setCartasMesaIA(nuevoMesaIA);
-
-      // PASO 1: IA pone la carta en la mesa boca abajo (dorso)
-      setActivePlayedCard({
-        card: cartaElegida,
-        playedBy: "IA",
-        isFlipped: false
-      });
-
-      // PASO 2: A los 450ms se voltea mostrando la carta lanzada con su imagen real
-      setTimeout(() => {
-        playCardFlipSound();
-        setActivePlayedCard((prev) => (prev ? { ...prev, isFlipped: true } : null));
-
-        // PASO 3: A los 550ms se aplica el efecto sobre el jugador y se muestra el mensaje
-        setTimeout(() => {
-          const outcome = aplicarCarta(cartaElegida, jugador, setJugador, ia, setIa, true);
-          setActivePlayedCard((prev) => (prev ? { ...prev, isFlipped: true, resultado: outcome } : null));
-
-          // PASO 4: Mantener la carta y el mensaje explicativo visibles durante 10000ms para que se pueda leer todo con tranquilidad
-          const advanceIA = () => {
-            setActivePlayedCard(null);
-            checkNuevaRonda(cartasMesaJugador, nuevoMesaIA);
-            setTurnoJugador(true);
-          };
-
-          pendingTurnAdvanceRef.current = advanceIA;
-          turnAdvanceTimerRef.current = setTimeout(() => {
-            if (pendingTurnAdvanceRef.current === advanceIA) {
-              advanceIA();
-              pendingTurnAdvanceRef.current = null;
-            }
-          }, 10000); // 10 segundos de visibilidad
-        }, 550);
-      }, 450);
-    }, 1600);
-
-    return () => clearTimeout(timer);
-  }, [screen, modoDosJugadores, turnoJugador, jugador.vida, ia.vida, activePlayedCard, dificultad, cartasMesaJugador, cartasMesaIA, cartaAnunciadaIA]);
-
-  // Modo FACIL: anuncia con antelación qué carta jugará la IA en su próximo turno, y arma
-  // la mano de 3 cartas del jugador garantizando que el control correcto esté presente.
+  // DIFÍCIL: cuenta atrás para elegir defensa. Si llega a 0, el ataque impacta.
+  // Se pausa mientras hay un modal abierto o la ronda se está resolviendo.
   useEffect(() => {
     if (screen !== "JUEGO" || online || modoDosJugadores) return;
-    if (dificultad !== "FACIL") return;
-    if (!turnoJugador) return; // solo se anuncia mientras el jugador está decidiendo
-    if (activePlayedCard) return;
-    if (cartaAnunciadaIA) return; // ya hay una anunciada para esta ronda
-
-    const idx = Math.floor(Math.random() * ATAQUES_FACIL.length);
-    const cartaBase = MAZO_BASE.find((c) => c.id === ATAQUES_FACIL[idx]) ?? MAZO_BASE[0];
-    // OJO: se guarda con su id original (sin sufijo), porque CONTRA_DE_ATAQUE y toda la
-    // lógica de acierto/error buscan la carta por ese id exacto ("phishing", "malware", etc.).
-    setCartaAnunciadaIA(cartaBase);
-    setManoJugador(construirManoConContra(cartaBase));
-  }, [screen, online, modoDosJugadores, dificultad, turnoJugador, activePlayedCard, cartaAnunciadaIA]);
+    if (tiempoRestante === null || activePlayedCard || animatingCardId) return;
+    if (showRulesModal || showVsCodeModal) return;
+    if (tiempoRestante <= 0) {
+      resolverRonda(null);
+      return;
+    }
+    const t = setTimeout(() => setTiempoRestante((s) => (s === null ? null : s - 1)), 1000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, online, modoDosJugadores, tiempoRestante, activePlayedCard, animatingCardId, showRulesModal, showVsCodeModal]);
 
   // Check Game Over: comprobarFinJuego()
   useEffect(() => {
     if (screen !== "JUEGO" || online) return; // en línea el final lo manda el servidor (game:over)
+    // 1 jugador: se espera a que se vea el resultado del último ataque/defensa antes de terminar
+    if (!modoDosJugadores && activePlayedCard) return;
 
     if (dificultad === "FACIL" && !modoDosJugadores) {
       if (puntajeJugador >= 100) {
@@ -1120,7 +1218,7 @@ export default function App() {
       playVictorySound();
       setScreen("FIN");
     }
-  }, [jugador.vida, ia.vida, screen, modoDosJugadores, dificultad, jugador.nombre, ia.nombre, puntajeJugador, puntajeIA]);
+  }, [jugador.vida, ia.vida, screen, modoDosJugadores, dificultad, jugador.nombre, ia.nombre, puntajeJugador, puntajeIA, activePlayedCard]);
 
   // Current active hand to display
   const manoActual = modoDosJugadores
@@ -1492,7 +1590,7 @@ export default function App() {
                       ? "Turno: JUGADOR 1"
                       : "Turno: JUGADOR 2"
                     : turnoJugador
-                    ? "Turno: JUGADOR"
+                    ? "🛡 Elige tu defensa"
                     : "Turno: IA"}
                 </div>
 
@@ -1541,13 +1639,37 @@ export default function App() {
               }}
             />
 
-            {/* Modo FACIL: aviso de qué carta jugará la IA a continuación, para elegir con qué responder */}
-            {dificultad === "FACIL" && !modoDosJugadores && !online && turnoJugador && !activePlayedCard && cartaAnunciadaIA && (
+            {/* 1 JUGADOR: la IA muestra la(s) carta(s) de ataque de las que lanzará UNA; el jugador elige su defensa */}
+            {!modoDosJugadores && !online && !activePlayedCard && ataquesAnunciados.length > 0 && (
               <div
-                className="absolute left-1/2 top-[30%] -translate-x-1/2 z-[35] px-4 py-2 rounded-2xl bg-emerald-950/90 border border-emerald-400/60 text-emerald-200 text-xs sm:text-sm font-bold text-center pointer-events-none shadow-[0_6px_20px_rgba(0,0,0,0.7)]"
-                style={{ maxWidth: "calc(var(--vw) * 90)" }}
+                className="absolute left-1/2 top-[21%] -translate-x-1/2 z-[35] flex flex-col items-center gap-2 pointer-events-none"
+                style={{ maxWidth: "calc(var(--vw) * 94)" }}
               >
-                🤖 La IA jugará: {cartaAnunciadaIA.nombre} ({cartaAnunciadaIA.objetivo}) — ¡elige tu carta!
+                <div className="px-4 py-1.5 rounded-2xl bg-emerald-950/90 border border-emerald-400/60 text-emerald-200 text-xs sm:text-sm font-bold text-center shadow-[0_6px_20px_rgba(0,0,0,0.7)]">
+                  🤖{" "}
+                  {ataquesAnunciados.length === 1
+                    ? `La IA lanzará: ${ataquesAnunciados[0].nombre} (${ataquesAnunciados[0].objetivo})`
+                    : dificultad === "NORMAL"
+                    ? "La IA lanzará UNA de estas 2 cartas (50 % / 50 %)"
+                    : `La IA lanzará UNA de estas ${ataquesAnunciados.length} cartas`}{" "}
+                  — ¡elige tu defensa!
+                </div>
+                <div className="flex items-end justify-center gap-3">
+                  {ataquesAnunciados.map((c) => (
+                    <MiniCarta key={c.id} card={c} />
+                  ))}
+                </div>
+                {tiempoRestante !== null && (
+                  <div
+                    className={`px-4 py-1 rounded-full border font-mono font-black text-sm sm:text-base shadow-[0_6px_20px_rgba(0,0,0,0.7)] ${
+                      tiempoRestante <= 2
+                        ? "bg-rose-950/95 border-rose-400 text-rose-200 animate-pulse"
+                        : "bg-black/80 border-amber-400/70 text-amber-200"
+                    }`}
+                  >
+                    ⏱ {tiempoRestante}s
+                  </div>
+                )}
               </div>
             )}
 

@@ -120,6 +120,21 @@ export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose }) => {
             </div>
           </div>
 
+          {/* Modos 1 jugador */}
+          <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30">
+            <h4 className="font-['Cinzel'] font-bold text-xs text-emerald-300 uppercase tracking-wider mb-1">
+              1 Jugador (vs IA): la IA ataca, tú defiendes
+            </h4>
+            <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-400">
+              <li>La IA solo lanza cartas de <strong>ataque</strong> y tú solo recibes cartas de <strong>defensa</strong> (3 por ronda).</li>
+              <li>Cada ronda la IA muestra sus cartas de ataque y lanza <strong>una</strong> de ellas; tú eliges con qué control responder.</li>
+              <li>Defensa correcta (Phishing→2FA, Malware→Antivirus, DDoS→Firewall, Jolly Ataque→Jolly Defensa): el ataque se bloquea. Defensa incorrecta: el ataque impacta.</li>
+              <li><strong>Fácil:</strong> la IA muestra 1 carta (sabes exactamente qué viene). Gana quien llegue primero a 100 puntos (+10 por ronda ganada).</li>
+              <li><strong>Normal:</strong> la IA muestra 2 cartas y lanza una al azar (50 % / 50 %). Se juega a vidas: bloquear le quita 1 ♥ a la IA; fallar te quita 1 ♥ a ti.</li>
+              <li><strong>Difícil:</strong> la IA muestra 3 cartas, tienes 5 segundos para elegir y la IA prefiere atacar un pilar que ya tengas comprometido. Se juega a vidas.</li>
+            </ul>
+          </div>
+
           {/* Rondas y Mesa */}
           <div className="p-3.5 rounded-xl bg-black/30 border border-white/5">
             <h4 className="font-['Cinzel'] font-bold text-xs text-amber-300 uppercase tracking-wider mb-1">
