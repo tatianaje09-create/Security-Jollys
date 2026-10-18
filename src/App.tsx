@@ -269,6 +269,8 @@ export default function App() {
   // 2 jugadores en un dispositivo: pantalla de relevo ("Turno del JUGADOR X") que tapa las cartas
   // hasta que el siguiente jugador pulse "Siguiente". null = sin pantalla de relevo.
   const [relevoLocal, setRelevoLocal] = useState<1 | 2 | null>(null);
+  // true = es la pantalla de bienvenida al empezar la partida (antes de la primera jugada)
+  const [relevoInicio, setRelevoInicio] = useState<boolean>(false);
 
   // Players state
   const [jugador, setJugador] = useState<PlayerEntity>({
@@ -533,6 +535,7 @@ export default function App() {
     setTiempoRestante(null);
     setEleccionJ1(null);
     setRelevoLocal(null);
+    setRelevoInicio(false);
     setScreen("INICIO");
   };
 
@@ -805,7 +808,8 @@ export default function App() {
     setAtaqueReal(null);
     setTiempoRestante(null);
     setEleccionJ1(null);
-    setRelevoLocal(null);
+    setRelevoLocal(dosJugadores ? 1 : null); // en 2 jugadores se tapan las cartas hasta pulsar "Comenzar"
+    setRelevoInicio(dosJugadores);
     setMiEleccionId(null);
     setRivalEligio(false);
 
@@ -1694,27 +1698,30 @@ export default function App() {
                 >
                   <div className={compact ? "text-3xl" : "text-5xl"}>🔒</div>
                   <h2 className={`font-black text-amber-300 tracking-wide ${compact ? "text-xl" : "text-3xl md:text-4xl"}`}>
-                    Turno del JUGADOR {relevoLocal}
+                    {relevoInicio ? "¡Va a empezar la partida!" : `Turno del JUGADOR ${relevoLocal}`}
                   </h2>
                   <p className={`text-slate-200 ${compact ? "text-xs" : "text-base md:text-lg"}`}>
-                    {relevoLocal === 2
+                    {relevoInicio
+                      ? "Comienza el JUGADOR 1. JUGADOR 2, aparta la vista mientras el JUGADOR 1 ve sus cartas."
+                      : relevoLocal === 2
                       ? "JUGADOR 1 ya eligió. JUGADOR 1, aparta la vista y pásale el dispositivo al JUGADOR 2."
                       : "JUGADOR 2, aparta la vista y pásale el dispositivo al JUGADOR 1."}
                   </p>
                   <p className={`text-slate-400 ${compact ? "text-[10px]" : "text-sm"}`}>
-                    Cuando estés listo, pulsa Siguiente para ver tus cartas.
+                    {relevoInicio ? "JUGADOR 1, pulsa Comenzar cuando estés listo." : "Cuando estés listo, pulsa Siguiente para ver tus cartas."}
                   </p>
                   <button
                     type="button"
                     onClick={() => {
                       playButtonClick();
                       setRelevoLocal(null);
+                      setRelevoInicio(false);
                     }}
                     className={`mt-1 rounded-xl font-bold tracking-wider text-amber-100 uppercase bg-gradient-to-b from-[#991b1b] via-[#851414] to-[#540909] border-2 border-amber-400/80 shadow-[0_6px_20px_rgba(0,0,0,0.7),inset_0_1px_1px_rgba(255,255,255,0.25)] hover:from-[#b91c1c] hover:border-amber-300 hover:scale-105 active:scale-95 transition-all duration-150 cursor-pointer ${
                       compact ? "px-6 py-2 text-sm" : "px-10 py-3 text-xl"
                     }`}
                   >
-                    Siguiente ▶
+                    {relevoInicio ? "Comenzar ▶" : "Siguiente ▶"}
                   </button>
                 </div>
               </div>
