@@ -10,12 +10,14 @@ import {
   OnlineAck,
   OnlineCloseReason,
   OnlineFx,
-  OnlinePlayedPayload,
+  OnlineChoicePayload,
+  OnlineClashPayload,
   OnlineSnapshot,
   OnlineSyncPayload,
   OnlineTurnPayload
 } from "./types";
 import { MAZO_BASE, repartirTresCartas } from "./utils/gameData";
+import { resolverEncuentro } from "./utils/encuentro";
 
 // --- Modos de 1 JUGADOR (vs IA): la IA SOLO ATACA y el jugador SOLO DEFIENDE ---------
 // (el modo 2 jugadores no usa nada de esto)
@@ -254,6 +256,11 @@ export default function App() {
   const playLockRef = useRef<boolean>(false);
   const onlineTimersRef = useRef<NodeJS.Timeout[]>([]);
   const hasConnectedRef = useRef<boolean>(false);
+  // En línea: los dos eligen carta en secreto y recién entonces se encuentran
+  const [miEleccionId, setMiEleccionId] = useState<string | null>(null); // carta que ya elegí
+  const [rivalEligio, setRivalEligio] = useState<boolean>(false); // el rival ya eligió (sin saber cuál)
+  // 2 jugadores en un dispositivo: carta que eligió el JUGADOR 1 (oculta hasta que elija el JUGADOR 2)
+  const [eleccionJ1, setEleccionJ1] = useState<Card | null>(null);
 
   // Players state
   const [jugador, setJugador] = useState<PlayerEntity>({
@@ -305,6 +312,22 @@ export default function App() {
   const [activePlayedCard, setActivePlayedCard] = useState<ActivePlayedCardState | null>(null);
   const pendingTurnAdvanceRef = useRef<(() => void) | null>(null);
   const turnAdvanceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // Temporizadores de las partidas locales (1 jugador y 2 jugadores en un dispositivo)
+  const timersLocalRef = useRef<NodeJS.Timeout[]>([]);
+  const programarLocal = (fn: () => void, ms: number) => {
+    const t = setTimeout(fn, ms);
+    timersLocalRef.current.push(t);
+    return t;
+  };
+  const limpiarTimersLocal = () => {
+    timersLocalRef.current.forEach((t) => clearTimeout(t));
+    timersLocalRef.current = [];
+    if (turnAdvanceTimerRef.current) {
+      clearTimeout(turnAdvanceTimerRef.current);
+      turnAdvanceTimerRef.current = null;
+    }
+    pendingTurnAdvanceRef.current = null;
+  };
 
   // Manual or automatic turn advance helper
   const handleContinuarTurno = () => {
@@ -458,24 +481,6 @@ export default function App() {
     return result.trim();
   };
 
-  // Probability random check: exito(int prob)
-  const exito = (probabilidad: number): boolean => {
-    return Math.random() * 100 < probabilidad;
-  };
-
-  // Probability modifier based on difficulty (from Java original)
-  const ajustarProbabilidad = (base: number, esIA: boolean): number => {
-    if (!esIA || modoDosJugadores) {
-      return base;
-    }
-    let ajuste = 0;
-    if (dificultad === "FACIL") ajuste = -20;
-    else if (dificultad === "DIFICIL") ajuste = 20;
-
-    const resultado = base + ajuste;
-    return Math.max(5, Math.min(95, resultado));
-  };
-
   // ======================================================================
   // MODO EN LÍNEA: el servidor (server/rooms.ts) reparte, tira los dados y
   // aplica los efectos. Aquí solo se muestra lo que llega y se pide jugar.
@@ -508,6 +513,20 @@ export default function App() {
     setJoinCodeUrl(undefined);
   };
 
+  // Salir de una partida local (1 jugador o 2 jugadores en un dispositivo) y volver al inicio
+  const salirPartidaLocal = () => {
+    limpiarTimersLocal();
+    rondaResueltaRef.current = false;
+    setActivePlayedCard(null);
+    setAnimatingCardId(null);
+    setMensajeCentral(null);
+    setAtaquesAnunciados([]);
+    setAtaqueReal(null);
+    setTiempoRestante(null);
+    setEleccionJ1(null);
+    setScreen("INICIO");
+  };
+
   const volverAlInicio = () => {
     playButtonClick();
     if (online) salirDeSala();
@@ -527,15 +546,19 @@ export default function App() {
     setCartasMesaIA(s.rivalMesa);
     setManoJugador(s.hand);
     setTurnoJugador(s.myTurn);
+    setMiEleccionId(s.myChoiceId);
+    setRivalEligio(s.rivalChose);
     setRivalConectado(s.rivalConnected);
     setYaContinue(s.waitingContinue);
     setAnimatingCardId(null);
     if (s.pending) {
+      // Encuentro ya resuelto: se ven las dos cartas y el resultado de cada una
       setActivePlayedCard({
-        card: s.pending.card,
-        playedBy: s.pending.playedByMe ? "TÚ" : "RIVAL",
+        card: s.pending.mine,
+        playedBy: "TÚ",
         isFlipped: true,
-        resultado: s.pending.outcome
+        resultado: s.pending.outcomeMine,
+        segunda: { card: s.pending.rival, playedBy: "RIVAL", resultado: s.pending.outcomeRival }
       });
     } else {
       setActivePlayedCard(null);
@@ -544,6 +567,8 @@ export default function App() {
       setMensajeFinJuego(
         s.result === "win"
           ? `¡GANASTE! Has derrotado a la ${s.rival.nombre}`
+          : s.result === "draw"
+          ? "¡EMPATE! Las dos empresas cayeron al mismo tiempo"
           : `¡PERDISTE! La ${s.me.nombre} ha caído`
       );
       setScreen("FIN");
@@ -602,26 +627,37 @@ export default function App() {
       setScreen("JUEGO");
       if (!resumed) {
         playRoundResetSound();
-        showCentralMessage(
-          snapshot.myTurn ? "🃏 ¡Rival conectado! Comienzas tú" : "🃏 ¡Rival conectado! Empieza el rival"
-        );
+        showCentralMessage("🃏 ¡Rival conectado! Los dos eligen una carta en secreto");
       }
     };
 
-    // Alguien jugó una carta: dorso -> volteo -> efecto (mismos tiempos que el modo local)
-    const onPlayed = (p: OnlinePlayedPayload) => {
+    // Uno de los dos eligió carta; las cartas siguen ocultas hasta que elijan los dos
+    const onChoice = (p: OnlineChoicePayload) => {
+      playLockRef.current = false;
+      setAnimatingCardId(null);
+      setMiEleccionId(p.myChoiceId);
+      setRivalEligio(p.rivalChose);
+      setTurnoJugador(p.myChoiceId === null);
+    };
+
+    // Los dos eligieron: las dos cartas se ponen boca abajo, se voltean y se ve qué pasó con cada una
+    const onClash = (p: OnlineClashPayload) => {
       limpiarTimersOnline();
       playLockRef.current = false;
       setAnimatingCardId(null);
       setYaContinue(false);
+      setMiEleccionId(null);
+      setRivalEligio(false);
+      setTurnoJugador(false);
       setManoJugador(p.state.hand);
       setCartasMesaJugador(p.state.meMesa);
       setCartasMesaIA(p.state.rivalMesa);
-      if (!p.playedByMe) playCardPlaySound();
+      playCardPlaySound();
       setActivePlayedCard({
-        card: p.card,
-        playedBy: p.playedByMe ? "TÚ" : "RIVAL",
-        isFlipped: false
+        card: p.mine,
+        playedBy: "TÚ",
+        isFlipped: false,
+        segunda: { card: p.rival, playedBy: "RIVAL" }
       });
       const t1 = setTimeout(() => {
         playCardFlipSound();
@@ -629,9 +665,19 @@ export default function App() {
         const t2 = setTimeout(() => {
           setJugador(p.state.me);
           setIa(p.state.rival);
-          reproducirFx(p.outcome.fx);
-          showCentralMessage(p.outcome.mensaje);
-          setActivePlayedCard((prev) => (prev ? { ...prev, isFlipped: true, resultado: p.outcome } : null));
+          reproducirFx(p.outcomeMine.fx);
+          reproducirFx(p.outcomeRival.fx);
+          showCentralMessage(p.outcomeMine.mensaje);
+          setActivePlayedCard((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  isFlipped: true,
+                  resultado: p.outcomeMine,
+                  segunda: prev.segunda ? { ...prev.segunda, resultado: p.outcomeRival } : undefined
+                }
+              : null
+          );
         }, 550);
         onlineTimersRef.current.push(t2);
       }, 350);
@@ -647,10 +693,11 @@ export default function App() {
       }
     };
 
-    const onOver = ({ result, snapshot }: { result: "win" | "lose"; snapshot: OnlineSnapshot }) => {
+    const onOver = ({ result, snapshot }: { result: "win" | "lose" | "draw"; snapshot: OnlineSnapshot }) => {
       aplicarSnapshot(snapshot);
       if (result === "win") playVictorySound();
-      else playDefeatSound();
+      else if (result === "lose") playDefeatSound();
+      else playRoundResetSound();
     };
 
     const onRival = ({ connected }: { connected: boolean }) => setRivalConectado(connected);
@@ -682,7 +729,8 @@ export default function App() {
 
     socket.on("connect", onConnect);
     socket.on("game:sync", onSync);
-    socket.on("game:played", onPlayed);
+    socket.on("game:choice", onChoice);
+    socket.on("game:clash", onClash);
     socket.on("game:turn", onTurn);
     socket.on("game:over", onOver);
     socket.on("room:rival", onRival);
@@ -691,7 +739,8 @@ export default function App() {
     return () => {
       socket.off("connect", onConnect);
       socket.off("game:sync", onSync);
-      socket.off("game:played", onPlayed);
+      socket.off("game:choice", onChoice);
+      socket.off("game:clash", onClash);
       socket.off("game:turn", onTurn);
       socket.off("game:over", onOver);
       socket.off("room:rival", onRival);
@@ -742,9 +791,13 @@ export default function App() {
     setCartasMesaIA(3);
     setPuntajeJugador(0);
     setPuntajeIA(0);
+    limpiarTimersLocal(); // por si quedó algo pendiente de una partida anterior
     setAtaquesAnunciados([]);
     setAtaqueReal(null);
     setTiempoRestante(null);
+    setEleccionJ1(null);
+    setMiEleccionId(null);
+    setRivalEligio(false);
 
     if (dosJugadores) {
       // 2 JUGADORES: cada uno con 3 cartas al azar del mazo completo (sin cambios)
@@ -769,231 +822,10 @@ export default function App() {
     setScreen("JUEGO");
   };
 
-  // Execute card effect (aplicarCarta in Java)
-  const aplicarCarta = (
-    c: Card,
-    objetivo: PlayerEntity,
-    setObjetivo: React.Dispatch<React.SetStateAction<PlayerEntity>>,
-    propio: PlayerEntity,
-    setPropio: React.Dispatch<React.SetStateAction<PlayerEntity>>,
-    esIA: boolean
-  ): CardActionOutcome => {
-    switch (c.tipo) {
-      case "ATAQUE": {
-        let prob = c.probBase;
-        if (c.nombre === "Phishing") {
-          prob = ajustarProbabilidad(60, esIA);
-          if (exito(prob)) {
-            setObjetivo((prev) => ({
-              ...prev,
-              vida: Math.max(0, prev.vida - 1),
-              confidencialidad: false
-            }));
-            playAttackHitSound();
-            showCentralMessage("📧 Phishing exitoso: Confidencialidad comprometida");
-            return {
-              titulo: "📧 Phishing Exitoso",
-              detalle: `Ataque de ingeniería social efectivo. La Confidencialidad de ${objetivo.nombre} fue vulnerada y perdió 1 vida.`,
-              exito: true,
-              tipo: "ATAQUE",
-              impacto: "-1 ♥ Vida"
-            };
-          } else {
-            playAttackMissSound();
-            showCentralMessage("❌ El ataque falló");
-            return {
-              titulo: "🛡 Phishing Bloqueado",
-              detalle: `${objetivo.nombre} detectó el engaño y protegió sus credenciales sin sufrir daño.`,
-              exito: false,
-              tipo: "ATAQUE",
-              impacto: "Ataque Fallido"
-            };
-          }
-        } else if (c.nombre === "DDoS") {
-          prob = ajustarProbabilidad(70, esIA);
-          if (exito(prob)) {
-            setObjetivo((prev) => ({
-              ...prev,
-              vida: Math.max(0, prev.vida - 1),
-              disponibilidad: false
-            }));
-            playAttackHitSound();
-            showCentralMessage("🌐 DDoS exitoso: Disponibilidad caída");
-            return {
-              titulo: "🌐 Ataque DDoS Exitoso",
-              detalle: `Inundación masiva de peticiones saturó el servidor. La Disponibilidad de ${objetivo.nombre} cayó y perdió 1 vida.`,
-              exito: true,
-              tipo: "ATAQUE",
-              impacto: "-1 ♥ Vida"
-            };
-          } else {
-            playAttackMissSound();
-            showCentralMessage("❌ El ataque falló");
-            return {
-              titulo: "🛡 DDoS Mitigado",
-              detalle: `Los sistemas de balanceo de ${objetivo.nombre} mitigaron la sobrecarga de tráfico.`,
-              exito: false,
-              tipo: "ATAQUE",
-              impacto: "Ataque Fallido"
-            };
-          }
-        } else if (c.nombre === "Malware") {
-          prob = ajustarProbabilidad(65, esIA);
-          if (exito(prob)) {
-            setObjetivo((prev) => ({
-              ...prev,
-              vida: Math.max(0, prev.vida - 1),
-              integridad: false
-            }));
-            playAttackHitSound();
-            showCentralMessage("🦠 Malware exitoso: Integridad comprometida");
-            return {
-              titulo: "🦠 Infección de Malware Exitosa",
-              detalle: `Binario malicioso ejecutado. La Integridad de los archivos de ${objetivo.nombre} fue alterada y perdió 1 vida.`,
-              exito: true,
-              tipo: "ATAQUE",
-              impacto: "-1 ♥ Vida"
-            };
-          } else {
-            playAttackMissSound();
-            showCentralMessage("❌ El ataque falló");
-            return {
-              titulo: "🛡 Malware Neutralizado",
-              detalle: `El sistema antivirus y EDR de ${objetivo.nombre} interceptó el código hostil a tiempo.`,
-              exito: false,
-              tipo: "ATAQUE",
-              impacto: "Ataque Fallido"
-            };
-          }
-        }
-        break;
-      }
-
-      case "DEFENSA": {
-        playDefenseSound();
-        if (c.nombre === "Antivirus") {
-          setPropio((prev) => ({
-            ...prev,
-            vida: Math.min(3, prev.vida + 1),
-            integridad: true
-          }));
-          showCentralMessage("🛡 Defensa aplicada: Antivirus");
-          return {
-            titulo: "🛡 Antivirus Activo",
-            detalle: `${propio.nombre} detectó y eliminó el software malicioso de sus equipos, restaurando Integridad (+1 ♥).`,
-            exito: true,
-            tipo: "DEFENSA",
-            impacto: "+1 ♥ Vida"
-          };
-        } else if (c.nombre === "2FA") {
-          setPropio((prev) => ({
-            ...prev,
-            vida: Math.min(3, prev.vida + 1),
-            confidencialidad: true
-          }));
-          showCentralMessage("🛡 Defensa aplicada: 2FA");
-          return {
-            titulo: "🔐 Doble Factor Activado",
-            detalle: `${propio.nombre} exigió una segunda verificación en cada acceso, recuperando Confidencialidad (+1 ♥).`,
-            exito: true,
-            tipo: "DEFENSA",
-            impacto: "+1 ♥ Vida"
-          };
-        } else if (c.nombre === "Firewall") {
-          setPropio((prev) => ({
-            ...prev,
-            vida: Math.min(3, prev.vida + 1),
-            disponibilidad: true
-          }));
-          showCentralMessage("🛡 Defensa aplicada: Firewall");
-          return {
-            titulo: "🧱 Reglas de Firewall Activas",
-            detalle: `${propio.nombre} filtró el tráfico de red anómalo, recuperando Disponibilidad total (+1 ♥).`,
-            exito: true,
-            tipo: "DEFENSA",
-            impacto: "+1 ♥ Vida"
-          };
-        }
-        break;
-      }
-
-      case "JOLLY": {
-        playJollySound();
-        if (c.nombre === "Jolly Ataque") {
-          if (exito(35)) {
-            let hits = 0;
-            if (exito(70)) hits++;
-            if (exito(70)) hits++;
-            if (exito(70)) hits++;
-
-            if (hits > 0) {
-              setObjetivo((prev) => ({
-                ...prev,
-                vida: Math.max(0, prev.vida - hits)
-              }));
-              playAttackHitSound();
-              showCentralMessage("🃏🔥 ¡Jolly Ataque impactó!");
-              return {
-                titulo: `🃏🔥 ¡Jolly Ataque Impactó (${hits} impacto${hits > 1 ? "s" : ""})!`,
-                detalle: `Exploit de día cero multifase golpeó múltiples servicios de ${objetivo.nombre}.`,
-                exito: true,
-                tipo: "JOLLY",
-                impacto: `-${hits} ♥ Vidas`
-              };
-            } else {
-              showCentralMessage("⚖️ Jolly Ataque no causó daño");
-              return {
-                titulo: "⚖️ Jolly Ataque sin Daño",
-                detalle: `El exploit avanzado no encontró vulnerabilidades explotables en ${objetivo.nombre}.`,
-                exito: false,
-                tipo: "JOLLY",
-                impacto: "Sin Daño"
-              };
-            }
-          } else {
-            playAttackMissSound();
-            showCentralMessage("⚖️ Jolly Ataque falló");
-            return {
-              titulo: "⚖️ Jolly Ataque Falló",
-              detalle: `El ataque multifase no logró penetrar los perímetros de ${objetivo.nombre}.`,
-              exito: false,
-              tipo: "JOLLY",
-              impacto: "Ataque Fallido"
-            };
-          }
-        } else if (c.nombre === "Jolly Defensa") {
-          setPropio((prev) => ({
-            ...prev,
-            vida: 3,
-            confidencialidad: true,
-            integridad: true,
-            disponibilidad: true
-          }));
-          showCentralMessage("🃏🛡 ¡Recuperación Total con Jolly Defensa!");
-          return {
-            titulo: "🃏🛡 ¡Resiliencia Total: Jolly Defensa!",
-            detalle: `${propio.nombre} desplegó un plan de contingencia de respuesta rápida, restaurando la Tríada CIA al 100% (3 ♥).`,
-            exito: true,
-            tipo: "JOLLY",
-            impacto: "Restauración Total (3 ♥)"
-          };
-        }
-        break;
-      }
-    }
-
-    return {
-      titulo: c.nombre,
-      detalle: c.descripcion,
-      exito: true,
-      tipo: c.tipo
-    };
-  };
-
   // Check new round: checkNuevaRonda()
   const checkNuevaRonda = (mesaJugador: number, mesaIA: number) => {
     if (mesaJugador <= 0 && mesaIA <= 0) {
-      setTimeout(() => {
+      programarLocal(() => {
         setCartasMesaJugador(3);
         setCartasMesaIA(3);
         playRoundResetSound();
@@ -1031,16 +863,22 @@ export default function App() {
     setCartasMesaJugador(nuevaMesaJugador);
     setCartasMesaIA(nuevaMesaIA);
 
-    // 2. La IA pone su carta boca abajo
-    setActivePlayedCard({ card: real, playedBy: "IA", isFlipped: false });
+    // 2. Las dos cartas se ponen boca abajo en la mesa: tu defensa (izquierda) y el ataque de la IA (derecha)
+    const propia = carta ?? descartada ?? real;
+    setActivePlayedCard({
+      card: propia,
+      playedBy: carta ? "TÚ" : "TÚ (sin tiempo)",
+      isFlipped: false,
+      segunda: { card: real, playedBy: "IA" }
+    });
 
-    // 3. A los 450ms la voltea y revela qué ataque lanzó de verdad
-    setTimeout(() => {
+    // 3. A los 450ms se voltean las dos y se revela qué ataque lanzó de verdad la IA
+    programarLocal(() => {
       playCardFlipSound();
       setActivePlayedCard((prev) => (prev ? { ...prev, isFlipped: true } : null));
 
       // 4. Tras voltearse (550ms) se aplica el resultado
-      setTimeout(() => {
+      programarLocal(() => {
         const mostradas =
           anunciados.length > 1
             ? ` La IA tenía en la mira: ${anunciados.map((c) => c.nombre).join(" / ")}.`
@@ -1112,11 +950,78 @@ export default function App() {
     }, 450);
   };
 
+  // ======================================================================
+  // 2 JUGADORES en un dispositivo: los dos eligen carta en secreto y SOLO cuando ambos
+  // han elegido se descubren las dos cartas, se encuentran y se sabe si el ataque funcionó.
+  // (La resolución es la misma que usa el servidor en línea: utils/encuentro.ts)
+  // ======================================================================
+  const resolverEncuentroLocal = (cartaJ1: Card, cartaJ2: Card) => {
+    const nuevaMesaJ1 = Math.max(0, cartasMesaJugador - 1);
+    const nuevaMesaJ2 = Math.max(0, cartasMesaIA - 1);
+
+    // Las dos cartas salen de las manos y ambos gastan una carta de la mesa
+    setManoJugador((prev) => prev.filter((c) => c.id !== cartaJ1.id));
+    setManoJugador2((prev) => prev.filter((c) => c.id !== cartaJ2.id));
+    setEleccionJ1(null);
+    setCartasMesaJugador(nuevaMesaJ1);
+    setCartasMesaIA(nuevaMesaJ2);
+
+    const res = resolverEncuentro(cartaJ1, cartaJ2, jugador, ia);
+
+    // PASO 1: las dos cartas aparecen boca abajo en la mesa
+    setActivePlayedCard({
+      card: cartaJ1,
+      playedBy: "JUGADOR 1",
+      isFlipped: false,
+      segunda: { card: cartaJ2, playedBy: "JUGADOR 2" }
+    });
+
+    // PASO 2: a los 350ms se voltean las dos
+    programarLocal(() => {
+      playCardFlipSound();
+      setActivePlayedCard((prev) => (prev ? { ...prev, isFlipped: true } : null));
+
+      // PASO 3: tras voltearse (550ms) se aplican los efectos y se muestra qué pasó con cada carta
+      programarLocal(() => {
+        setJugador(res.a);
+        setIa(res.b);
+        reproducirFx(res.outcomeA.fx);
+        reproducirFx(res.outcomeB.fx);
+        setActivePlayedCard((prev) =>
+          prev
+            ? {
+                ...prev,
+                isFlipped: true,
+                resultado: res.outcomeA,
+                segunda: prev.segunda ? { ...prev.segunda, resultado: res.outcomeB } : undefined
+              }
+            : null
+        );
+
+        // PASO 4: resultado visible 10 s (o hasta pulsar Continuar); luego empieza la siguiente jugada
+        const advance = () => {
+          setActivePlayedCard(null);
+          setManoJugador((prev) => (prev.length === 0 ? repartirTresCartas() : prev));
+          setManoJugador2((prev) => (prev.length === 0 ? repartirTresCartas() : prev));
+          checkNuevaRonda(nuevaMesaJ1, nuevaMesaJ2);
+          setTurnoJugador(true); // vuelve a elegir primero el JUGADOR 1
+        };
+        pendingTurnAdvanceRef.current = advance;
+        turnAdvanceTimerRef.current = setTimeout(() => {
+          if (pendingTurnAdvanceRef.current === advance) {
+            advance();
+            pendingTurnAdvanceRef.current = null;
+          }
+        }, 10000);
+      }, 550);
+    }, 350);
+  };
+
   // Handle Player Action: jugarCarta(Carta carta) with 3D Flip Animation (Reverso -> Volteo -> Frente)
   const handleJugarCarta = (carta: Card) => {
     if (online) {
-      // En línea solo se PIDE jugar la carta; el servidor decide y responde con game:played
-      if (!turnoJugador || animatingCardId || activePlayedCard || playLockRef.current) return;
+      // En línea solo se PIDE jugar la carta; el servidor espera a que elijan los dos y responde con game:clash
+      if (!turnoJugador || miEleccionId || animatingCardId || activePlayedCard || playLockRef.current) return;
       if (!socket.connected) {
         showCentralMessage("⚠️ Sin conexión con el servidor. Reintentando…");
         return;
@@ -1139,78 +1044,27 @@ export default function App() {
       playCardPlaySound();
       setTiempoRestante(null); // se detiene el reloj en cuanto eliges
       setAnimatingCardId(carta.id);
-      setTimeout(() => {
+      programarLocal(() => {
         setAnimatingCardId(null);
         resolverRonda(carta);
       }, 200);
       return;
     }
 
-    // ---- 2 JUGADORES (local, mismo dispositivo): sin cambios ----
+    // ---- 2 JUGADORES (mismo dispositivo): cada uno elige en secreto, luego se encuentran las cartas ----
     playCardPlaySound();
-
-    // Trigger animation in player's hand
     setAnimatingCardId(carta.id);
-
-    setTimeout(() => {
+    programarLocal(() => {
       setAnimatingCardId(null);
-
-      const esJugador1 = turnoJugador;
-      const nombreQuienLanza = esJugador1 ? "JUGADOR 1" : "JUGADOR 2";
-
-      // 1. Quitar carta de la mano y descontar carta de la mesa
-      if (esJugador1) {
-        setManoJugador((prev) => prev.filter((c) => c.id !== carta.id));
-        setCartasMesaJugador((prev) => Math.max(0, prev - 1));
-      } else {
-        setManoJugador2((prev) => prev.filter((c) => c.id !== carta.id));
-        setCartasMesaIA((prev) => Math.max(0, prev - 1));
+      if (turnoJugador) {
+        // JUGADOR 1 elige: su carta queda boca abajo y le toca elegir al JUGADOR 2 (sin mirar)
+        setEleccionJ1(carta);
+        setTurnoJugador(false);
+        showCentralMessage("✅ JUGADOR 1 ya eligió. Ahora elige JUGADOR 2 (JUGADOR 1, no mires)");
+        return;
       }
-
-      // 2. PASO 1: Aparece el revés de la carta en la mesa (dorso)
-      setActivePlayedCard({
-        card: carta,
-        playedBy: nombreQuienLanza,
-        isFlipped: false
-      });
-
-      // 3. PASO 2: A los 350ms, la carta da la vuelta (flip 3D) y revela el frente con su imagen real
-      setTimeout(() => {
-        playCardFlipSound();
-        setActivePlayedCard((prev) => (prev ? { ...prev, isFlipped: true } : null));
-
-        // 4. PASO 3: Tras voltearse (550ms), se aplica el efecto en las vidas/estados
-        setTimeout(() => {
-          const outcome = esJugador1
-            ? aplicarCarta(carta, ia, setIa, jugador, setJugador, false)
-            : aplicarCarta(carta, jugador, setJugador, ia, setIa, false);
-
-          setActivePlayedCard((prev) => (prev ? { ...prev, isFlipped: true, resultado: outcome } : null));
-
-          // 5. PASO 4: Se mantiene la carta y el panel explicativo visibles por 10000ms para que se alcance a leer cómodamente
-          const advance = () => {
-            setActivePlayedCard(null);
-
-            if (esJugador1) {
-              setManoJugador((prev) => (prev.length === 0 ? repartirTresCartas() : prev));
-              checkNuevaRonda(cartasMesaJugador - 1, cartasMesaIA);
-              setTurnoJugador(false);
-            } else {
-              setManoJugador2((prev) => (prev.length === 0 ? repartirTresCartas() : prev));
-              checkNuevaRonda(cartasMesaJugador, cartasMesaIA - 1);
-              setTurnoJugador(true);
-            }
-          };
-
-          pendingTurnAdvanceRef.current = advance;
-          turnAdvanceTimerRef.current = setTimeout(() => {
-            if (pendingTurnAdvanceRef.current === advance) {
-              advance();
-              pendingTurnAdvanceRef.current = null;
-            }
-          }, 10000); // 10 segundos de visibilidad
-        }, 550);
-      }, 350);
+      // JUGADOR 2 elige: ya están las dos cartas, se encuentran
+      if (eleccionJ1) resolverEncuentroLocal(eleccionJ1, carta);
     }, 200);
   };
 
@@ -1232,8 +1086,8 @@ export default function App() {
   // Check Game Over: comprobarFinJuego()
   useEffect(() => {
     if (screen !== "JUEGO" || online) return; // en línea el final lo manda el servidor (game:over)
-    // 1 jugador: se espera a que se vea el resultado del último ataque/defensa antes de terminar
-    if (!modoDosJugadores && activePlayedCard) return;
+    // Se espera a que se vea el resultado del último encuentro antes de terminar la partida
+    if (activePlayedCard) return;
 
     if (dificultad === "FACIL" && !modoDosJugadores) {
       if (puntajeJugador >= 100) {
@@ -1248,7 +1102,12 @@ export default function App() {
       return;
     }
 
-    if (jugador.vida <= 0) {
+    if (jugador.vida <= 0 && ia.vida <= 0) {
+      // Las dos cartas se golpearon a la vez y las dos empresas cayeron (solo 2 jugadores)
+      setMensajeFinJuego("¡EMPATE! Las dos empresas cayeron al mismo tiempo");
+      playRoundResetSound();
+      setScreen("FIN");
+    } else if (jugador.vida <= 0) {
       if (modoDosJugadores) {
         setMensajeFinJuego(`¡JUGADOR 2 GANA! (${jugador.nombre} ha caído)`);
       } else {
@@ -1272,6 +1131,8 @@ export default function App() {
     ? turnoJugador
       ? manoJugador
       : manoJugador2
+    : online
+    ? manoJugador.filter((c) => c.id !== miEleccionId) // en línea, la carta ya elegida queda boca abajo en la mesa
     : manoJugador;
 
   return (
@@ -1345,18 +1206,23 @@ export default function App() {
           </button>
         )}
 
-        {/* Salir de la sala (solo en partida en línea) */}
-        {online && screen === "JUEGO" && (
+        {/* Salir de la partida (1 jugador, 2 jugadores y en línea) */}
+        {screen === "JUEGO" && (
           <button
             onClick={() => {
-              if (window.confirm("¿Salir de la partida en línea? Tu rival será notificado.")) {
+              if (online) {
+                if (window.confirm("¿Salir de la partida en línea? Tu rival será notificado.")) {
+                  playButtonClick();
+                  salirDeSala();
+                  setScreen("INICIO");
+                }
+              } else if (window.confirm("¿Salir de la partida? Se perderá el progreso actual.")) {
                 playButtonClick();
-                salirDeSala();
-                setScreen("INICIO");
+                salirPartidaLocal();
               }
             }}
             className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-gradient-to-b from-[#1c1f2b] to-[#12141d] hover:from-[#252a3a] hover:to-[#181b26] border border-rose-400/50 hover:border-rose-300 text-rose-200 cursor-pointer shadow-[0_2px_8px_rgba(0,0,0,0.5)] active:scale-95 transition-all"
-            title="Salir de la sala"
+            title="Salir de la partida"
           >
             <LogOut className="w-3.5 h-3.5 text-rose-400" />
             <span className="hidden md:inline">Salir</span>
@@ -1629,13 +1495,17 @@ export default function App() {
                   className={`drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)] ${compact ? "px-3 py-1 text-xs" : "px-6 py-1.5 text-lg md:text-xl"} rounded-full bg-black/65 backdrop-blur-md border border-amber-400/60 text-amber-300 font-bold text-center leading-tight shadow-[0_6px_20px_rgba(0,0,0,0.7)] tracking-wide`}
                 >
                   {online
-                    ? turnoJugador
-                      ? "Tu turno"
-                      : "Turno del rival"
+                    ? activePlayedCard
+                      ? "Las cartas se encuentran"
+                      : miEleccionId
+                      ? "Esperando al rival…"
+                      : "Elige tu carta"
                     : modoDosJugadores
-                    ? turnoJugador
-                      ? "Turno: JUGADOR 1"
-                      : "Turno: JUGADOR 2"
+                    ? activePlayedCard
+                      ? "Las cartas se encuentran"
+                      : turnoJugador
+                      ? "JUGADOR 1: elige tu carta"
+                      : "JUGADOR 2: elige tu carta"
                     : turnoJugador
                     ? "🛡 Elige tu defensa"
                     : "Turno: IA"}
@@ -1678,7 +1548,7 @@ export default function App() {
               cartasMesaJugador={cartasMesaJugador}
               cartasMesaIA={cartasMesaIA}
               onDropCard={(e) => {
-                if (!turnoJugador) return;
+                if (online ? !turnoJugador || !!miEleccionId : !turnoJugador && !modoDosJugadores) return;
                 // Juega la carta que se arrastró (si no se puede saber cuál, la primera)
                 const idArrastrada = e?.dataTransfer?.getData("text/plain");
                 const carta = manoActual.find((c) => c.id === idArrastrada) ?? manoActual[0];
@@ -1720,6 +1590,65 @@ export default function App() {
               </div>
             )}
 
+            {/* En línea: los dos eligen en secreto; aquí se ve quién ya eligió (sin mostrar cuál carta) */}
+            {online && !activePlayedCard && (miEleccionId || rivalEligio) && (
+              <div
+                className="absolute left-1/2 top-[27%] -translate-x-1/2 z-[35] flex flex-col items-center gap-2 pointer-events-none"
+                style={{ maxWidth: "calc(var(--vw) * 94)" }}
+              >
+                <div className="px-4 py-1.5 rounded-2xl bg-emerald-950/90 border border-emerald-400/60 text-emerald-200 text-xs sm:text-sm font-bold text-center shadow-[0_6px_20px_rgba(0,0,0,0.7)]">
+                  {miEleccionId
+                    ? rivalEligio
+                      ? "✅ Los dos eligieron… ¡las cartas se encuentran!"
+                      : "✅ Elegiste tu carta — esperando a que el rival elija…"
+                    : "⏳ El rival ya eligió. ¡Elige tu carta!"}
+                </div>
+                <div className="flex items-end justify-center gap-4">
+                  {miEleccionId && (
+                    <div style={{ width: "clamp(58px, calc(var(--vh) * 11), 100px)", aspectRatio: "195 / 275" }}>
+                      <img
+                        src="/img/dorso.png"
+                        alt="Tu carta"
+                        className="w-full h-full object-cover rounded-lg border-2 border-amber-400/80 shadow-[0_6px_16px_rgba(0,0,0,0.9)]"
+                        draggable={false}
+                      />
+                    </div>
+                  )}
+                  <div
+                    className={`${rivalEligio ? "" : "opacity-30"}`}
+                    style={{ width: "clamp(58px, calc(var(--vh) * 11), 100px)", aspectRatio: "195 / 275" }}
+                  >
+                    <img
+                      src="/img/dorso.png"
+                      alt="Carta del rival"
+                      className="w-full h-full object-cover rounded-lg border-2 border-amber-400/80 shadow-[0_6px_16px_rgba(0,0,0,0.9)]"
+                      draggable={false}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 2 jugadores en un dispositivo: la carta del JUGADOR 1 ya está elegida y boca abajo */}
+            {!online && modoDosJugadores && !activePlayedCard && eleccionJ1 && (
+              <div
+                className="absolute left-1/2 top-[27%] -translate-x-1/2 z-[35] flex flex-col items-center gap-2 pointer-events-none"
+                style={{ maxWidth: "calc(var(--vw) * 94)" }}
+              >
+                <div className="px-4 py-1.5 rounded-2xl bg-emerald-950/90 border border-emerald-400/60 text-emerald-200 text-xs sm:text-sm font-bold text-center shadow-[0_6px_20px_rgba(0,0,0,0.7)]">
+                  ✅ JUGADOR 1 ya eligió (carta oculta) — ahora elige JUGADOR 2
+                </div>
+                <div style={{ width: "clamp(58px, calc(var(--vh) * 11), 100px)", aspectRatio: "195 / 275" }}>
+                  <img
+                    src="/img/dorso.png"
+                    alt="Carta del jugador 1"
+                    className="w-full h-full object-cover rounded-lg border-2 border-amber-400/80 shadow-[0_6px_16px_rgba(0,0,0,0.9)]"
+                    draggable={false}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* Aviso: el rival perdió la conexión (en línea) */}
             {online && !rivalConectado && (
               <div className="absolute left-1/2 top-[38%] -translate-x-1/2 z-[35] px-4 py-2 rounded-full bg-rose-950/95 border border-rose-400/70 text-rose-200 text-xs sm:text-sm font-bold animate-pulse text-center pointer-events-none" style={{ maxWidth: "calc(var(--vw) * 90)" }}>
@@ -1735,6 +1664,7 @@ export default function App() {
                 playedBy={activePlayedCard.playedBy}
                 isFlipped={activePlayedCard.isFlipped}
                 resultado={activePlayedCard.resultado}
+                segunda={activePlayedCard.segunda}
                 onContinue={handleContinuarTurno}
                 esperando={online && yaContinue}
                 autoCloseDuration={10000}
@@ -1780,7 +1710,7 @@ export default function App() {
                     card={carta}
                     disabled={
                       online
-                        ? !turnoJugador || !!activePlayedCard
+                        ? !turnoJugador || !!activePlayedCard || !!miEleccionId
                         : !turnoJugador && !modoDosJugadores
                     }
                     isAnimating={isThisAnimating}

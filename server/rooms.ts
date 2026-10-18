@@ -1,13 +1,14 @@
 import type { Server, Socket } from "socket.io";
 import { repartirTresCartas } from "../src/utils/gameData";
+import { resolverEncuentro } from "../src/utils/encuentro";
 import type {
   Card,
   PlayerEntity,
   OnlineAck,
+  OnlineChoicePayload,
+  OnlineClashPayload,
   OnlineCloseReason,
-  OnlineFx,
   OnlineOutcome,
-  OnlinePlayedPayload,
   OnlineSnapshot,
   OnlineSyncPayload,
   OnlineTurnPayload
@@ -20,11 +21,13 @@ import type {
  * probabilidad y aplica los efectos. Los clientes solo piden "jugar la carta X"
  * y reciben el resultado. Así nadie puede ver la mano del rival ni hacer trampa.
  *
+ * Cada ronda los DOS jugadores eligen carta en secreto; solo cuando ambos han elegido
+ * se descubren las dos cartas, se encuentran y se resuelve el resultado (ver utils/encuentro.ts).
+ *
  * Las salas viven en memoria (se pierden si reinicias el servidor).
  */
 
 type Seat = 0 | 1;
-type Campo = "confidencialidad" | "integridad" | "disponibilidad";
 
 // Sin 0/O/1/I/L para que el código sea fácil de dictar y teclear.
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -45,28 +48,27 @@ interface Slot {
   entity: PlayerEntity;
   hand: Card[];
   mesa: number;
+  choiceId: string | null; // carta elegida en secreto esta ronda
   continued: boolean;
   dropTimer: NodeJS.Timeout | null;
 }
 
+// Encuentro ya resuelto, a la espera de que ambos pulsen "Continuar"
 interface Pending {
-  seat: Seat;
-  card: Card;
-  outcome: OnlineOutcome;
-  winner: Seat | null;
+  cards: [Card, Card]; // carta del asiento 0 y del asiento 1
+  outcomes: [OnlineOutcome, OnlineOutcome];
+  winner: Seat | "empate" | null;
 }
 
 interface Room {
   code: string;
   slots: Slot[]; // 1 (esperando) o 2 (jugando)
   phase: "waiting" | "playing" | "over";
-  turn: Seat;
   pending: Pending | null;
   advanceTimer: NodeJS.Timeout | null;
-  winner: Seat | null;
+  winner: Seat | "empate" | null;
 }
 
-const exito = (probabilidad: number): boolean => Math.random() * 100 < probabilidad;
 const otro = (s: Seat): Seat => (s === 0 ? 1 : 0);
 
 function nuevaEntidad(seat: Seat): PlayerEntity {
@@ -86,211 +88,9 @@ function nuevoSlot(playerId: string, socketId: string, seat: Seat): Slot {
     entity: nuevaEntidad(seat),
     hand: [],
     mesa: 3,
+    choiceId: null,
     continued: false,
     dropTimer: null
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Efectos de las cartas (equivalente a aplicarCarta del modo local)
-// ---------------------------------------------------------------------------
-
-interface DefAtaque {
-  prob: number;
-  campo: Campo;
-  mensaje: string;
-  ok: { titulo: string; detalle: (objetivo: string) => string };
-  fail: { titulo: string; detalle: (objetivo: string) => string };
-}
-
-const ATAQUES: Record<string, DefAtaque> = {
-  Phishing: {
-    prob: 60,
-    campo: "confidencialidad",
-    mensaje: "📧 Phishing exitoso: Confidencialidad comprometida",
-    ok: {
-      titulo: "📧 Phishing Exitoso",
-      detalle: (o) =>
-        `Ataque de ingeniería social efectivo. La Confidencialidad de ${o} fue vulnerada y perdió 1 vida.`
-    },
-    fail: {
-      titulo: "🛡 Phishing Bloqueado",
-      detalle: (o) => `${o} detectó el engaño y protegió sus credenciales sin sufrir daño.`
-    }
-  },
-  DDoS: {
-    prob: 70,
-    campo: "disponibilidad",
-    mensaje: "🌐 DDoS exitoso: Disponibilidad caída",
-    ok: {
-      titulo: "🌐 Ataque DDoS Exitoso",
-      detalle: (o) =>
-        `Inundación masiva de peticiones saturó el servidor. La Disponibilidad de ${o} cayó y perdió 1 vida.`
-    },
-    fail: {
-      titulo: "🛡 DDoS Mitigado",
-      detalle: (o) => `Los sistemas de balanceo de ${o} mitigaron la sobrecarga de tráfico.`
-    }
-  },
-  Malware: {
-    prob: 65,
-    campo: "integridad",
-    mensaje: "🦠 Malware exitoso: Integridad comprometida",
-    ok: {
-      titulo: "🦠 Infección de Malware Exitosa",
-      detalle: (o) =>
-        `Binario malicioso ejecutado. La Integridad de los archivos de ${o} fue alterada y perdió 1 vida.`
-    },
-    fail: {
-      titulo: "🛡 Malware Neutralizado",
-      detalle: (o) => `El sistema antivirus y EDR de ${o} interceptó el código hostil a tiempo.`
-    }
-  }
-};
-
-interface DefDefensa {
-  campo: Campo;
-  mensaje: string;
-  titulo: string;
-  detalle: (propio: string) => string;
-}
-
-const DEFENSAS: Record<string, DefDefensa> = {
-  Antivirus: {
-    campo: "integridad",
-    mensaje: "🛡 Defensa aplicada: Antivirus",
-    titulo: "🛡 Antivirus Activo",
-    detalle: (p) =>
-      `${p} detectó y eliminó el software malicioso de sus equipos, restaurando Integridad (+1 ♥).`
-  },
-  "2FA": {
-    campo: "confidencialidad",
-    mensaje: "🛡 Defensa aplicada: 2FA",
-    titulo: "🔐 Doble Factor Activado",
-    detalle: (p) =>
-      `${p} exigió una segunda verificación en cada acceso, recuperando Confidencialidad (+1 ♥).`
-  },
-  Firewall: {
-    campo: "disponibilidad",
-    mensaje: "🛡 Defensa aplicada: Firewall",
-    titulo: "🧱 Reglas de Firewall Activas",
-    detalle: (p) =>
-      `${p} filtró el tráfico de red anómalo, recuperando Disponibilidad total (+1 ♥).`
-  }
-};
-
-/** Aplica la carta MUTANDO `propio` y `objetivo`, y devuelve el resultado para mostrar. */
-function resolverCarta(c: Card, propio: PlayerEntity, objetivo: PlayerEntity): OnlineOutcome {
-  if (c.tipo === "ATAQUE") {
-    const def = ATAQUES[c.nombre];
-    if (def) {
-      if (exito(def.prob)) {
-        objetivo.vida = Math.max(0, objetivo.vida - 1);
-        objetivo[def.campo] = false;
-        return {
-          titulo: def.ok.titulo,
-          detalle: def.ok.detalle(objetivo.nombre),
-          exito: true,
-          tipo: "ATAQUE",
-          impacto: "-1 ♥ Vida",
-          mensaje: def.mensaje,
-          fx: ["hit"]
-        };
-      }
-      return {
-        titulo: def.fail.titulo,
-        detalle: def.fail.detalle(objetivo.nombre),
-        exito: false,
-        tipo: "ATAQUE",
-        impacto: "Ataque Fallido",
-        mensaje: "❌ El ataque falló",
-        fx: ["miss"]
-      };
-    }
-  }
-
-  if (c.tipo === "DEFENSA") {
-    const def = DEFENSAS[c.nombre];
-    if (def) {
-      propio.vida = Math.min(3, propio.vida + 1);
-      propio[def.campo] = true;
-      return {
-        titulo: def.titulo,
-        detalle: def.detalle(propio.nombre),
-        exito: true,
-        tipo: "DEFENSA",
-        impacto: "+1 ♥ Vida",
-        mensaje: def.mensaje,
-        fx: ["defensa"]
-      };
-    }
-  }
-
-  if (c.tipo === "JOLLY") {
-    if (c.nombre === "Jolly Ataque") {
-      const fx: OnlineFx[] = ["jolly"];
-      if (exito(35)) {
-        let hits = 0;
-        for (let i = 0; i < 3; i++) if (exito(70)) hits++;
-        if (hits > 0) {
-          objetivo.vida = Math.max(0, objetivo.vida - hits);
-          fx.push("hit");
-          return {
-            titulo: `🃏🔥 ¡Jolly Ataque Impactó (${hits} impacto${hits > 1 ? "s" : ""})!`,
-            detalle: `Exploit de día cero multifase golpeó múltiples servicios de ${objetivo.nombre}.`,
-            exito: true,
-            tipo: "JOLLY",
-            impacto: `-${hits} ♥ Vidas`,
-            mensaje: "🃏🔥 ¡Jolly Ataque impactó!",
-            fx
-          };
-        }
-        return {
-          titulo: "⚖️ Jolly Ataque sin Daño",
-          detalle: `El exploit avanzado no encontró vulnerabilidades explotables en ${objetivo.nombre}.`,
-          exito: false,
-          tipo: "JOLLY",
-          impacto: "Sin Daño",
-          mensaje: "⚖️ Jolly Ataque no causó daño",
-          fx
-        };
-      }
-      fx.push("miss");
-      return {
-        titulo: "⚖️ Jolly Ataque Falló",
-        detalle: `El ataque multifase no logró penetrar los perímetros de ${objetivo.nombre}.`,
-        exito: false,
-        tipo: "JOLLY",
-        impacto: "Ataque Fallido",
-        mensaje: "⚖️ Jolly Ataque falló",
-        fx
-      };
-    }
-    if (c.nombre === "Jolly Defensa") {
-      propio.vida = 3;
-      propio.confidencialidad = true;
-      propio.integridad = true;
-      propio.disponibilidad = true;
-      return {
-        titulo: "🃏🛡 ¡Resiliencia Total: Jolly Defensa!",
-        detalle: `${propio.nombre} desplegó un plan de contingencia de respuesta rápida, restaurando la Tríada CIA al 100% (3 ♥).`,
-        exito: true,
-        tipo: "JOLLY",
-        impacto: "Restauración Total (3 ♥)",
-        mensaje: "🃏🛡 ¡Recuperación Total con Jolly Defensa!",
-        fx: ["jolly"]
-      };
-    }
-  }
-
-  // Carta desconocida: no hace nada
-  return {
-    titulo: c.nombre,
-    detalle: c.descripcion,
-    exito: true,
-    tipo: c.tipo,
-    mensaje: c.nombre,
-    fx: []
   };
 }
 
@@ -341,6 +141,7 @@ export function registerRoomHandlers(io: Server) {
     const yo = room.slots[seat];
     const rival = room.slots[otro(seat)];
     const pend = room.pending;
+    const op = otro(seat);
     return {
       code: room.code,
       seat,
@@ -350,14 +151,27 @@ export function registerRoomHandlers(io: Server) {
       meMesa: yo.mesa,
       rivalMesa: rival.mesa,
       hand: yo.hand.map((c) => ({ ...c })),
-      myTurn: room.phase === "playing" && room.turn === seat,
+      myTurn: room.phase === "playing" && !pend && yo.choiceId === null,
       rivalConnected: !!rival.socketId,
       pending: pend
-        ? { card: pend.card, playedByMe: pend.seat === seat, outcome: pend.outcome }
+        ? {
+            mine: pend.cards[seat],
+            rival: pend.cards[op],
+            outcomeMine: pend.outcomes[seat],
+            outcomeRival: pend.outcomes[op]
+          }
         : null,
+      myChoiceId: yo.choiceId,
+      rivalChose: rival.choiceId !== null,
       waitingContinue: yo.continued,
       result:
-        room.phase === "over" && room.winner !== null ? (room.winner === seat ? "win" : "lose") : null
+        room.phase === "over" && room.winner !== null
+          ? room.winner === "empate"
+            ? "draw"
+            : room.winner === seat
+            ? "win"
+            : "lose"
+          : null
     };
   };
 
@@ -413,7 +227,7 @@ export function registerRoomHandlers(io: Server) {
     roomByPlayer.set(slot.playerId, room.code);
   };
 
-  const avanzarTurno = (room: Room) => {
+  const avanzarRonda = (room: Room) => {
     const pend = room.pending;
     if (!pend) return;
     if (room.advanceTimer) {
@@ -421,23 +235,27 @@ export function registerRoomHandlers(io: Server) {
       room.advanceTimer = null;
     }
     room.pending = null;
-    room.slots.forEach((s) => (s.continued = false));
+    room.slots.forEach((s) => {
+      s.continued = false;
+      s.choiceId = null;
+    });
 
     if (pend.winner !== null) {
       room.phase = "over";
       room.winner = pend.winner;
       room.slots.forEach((_, seat) => {
         emitToSeat(room, seat as Seat, "game:over", {
-          result: pend.winner === seat ? "win" : "lose",
+          result: pend.winner === "empate" ? "draw" : pend.winner === seat ? "win" : "lose",
           snapshot: snapshotFor(room, seat as Seat)
         });
       });
       return;
     }
 
-    // Si el jugador se quedó sin cartas en la mano, se le reparten 3 nuevas.
-    const quienJugo = room.slots[pend.seat];
-    if (quienJugo.hand.length === 0) quienJugo.hand = repartirTresCartas();
+    // Si un jugador se quedó sin cartas en la mano, se le reparten 3 nuevas.
+    room.slots.forEach((sl) => {
+      if (sl.hand.length === 0) sl.hand = repartirTresCartas();
+    });
 
     // Nueva ronda: cuando las 6 cartas de la mesa ya se jugaron.
     let newRound = false;
@@ -446,7 +264,6 @@ export function registerRoomHandlers(io: Server) {
       newRound = true;
     }
 
-    room.turn = otro(pend.seat);
     room.slots.forEach((_, seat) => {
       const payload: OnlineTurnPayload = { snapshot: snapshotFor(room, seat as Seat), newRound };
       emitToSeat(room, seat as Seat, "game:turn", payload);
@@ -471,7 +288,6 @@ export function registerRoomHandlers(io: Server) {
         code: generarCodigo(),
         slots: [nuevoSlot(playerId, socket.id, 0)],
         phase: "waiting",
-        turn: 0,
         pending: null,
         advanceTimer: null,
         winner: null
@@ -528,7 +344,6 @@ export function registerRoomHandlers(io: Server) {
       room.slots.push(nuevoSlot(playerId, socket.id, 1));
       enlazarSocket(room, 1, socket);
       room.phase = "playing";
-      room.turn = 0;
       room.slots[0].hand = repartirTresCartas();
       room.slots[1].hand = repartirTresCartas();
 
@@ -564,7 +379,8 @@ export function registerRoomHandlers(io: Server) {
       if (typeof ack === "function") (ack as () => void)();
     });
 
-    // ---------------------------------------------------------- jugar carta
+    // ---------------------------------------------------------- elegir carta
+    // Cada jugador elige en secreto. Cuando ya eligieron los dos, las cartas se encuentran.
     socket.on("game:play", (data: { cardId?: string } | undefined) => {
       const room = rooms.get(socket.data.code as string);
       if (!room) return error(socket, "La sala ya no existe.");
@@ -572,34 +388,51 @@ export function registerRoomHandlers(io: Server) {
       if (seatIdx < 0) return error(socket, "No formas parte de esta partida.");
       const seat = seatIdx as Seat;
       if (room.phase !== "playing") return error(socket, "La partida no está en curso.");
-      if (room.pending) return error(socket, "Espera a que termine la jugada anterior.");
-      if (room.turn !== seat) return error(socket, "No es tu turno.");
+      if (room.pending) return error(socket, "Espera a que termine el encuentro anterior.");
       if (room.slots.some((s) => !s.socketId)) {
         return error(socket, "Tu rival está desconectado. Espera a que vuelva.");
       }
 
       const yo = room.slots[seat];
-      const rival = room.slots[otro(seat)];
+      if (yo.choiceId !== null) return error(socket, "Ya elegiste tu carta. Espera al rival.");
       const card = yo.hand.find((c) => c.id === data?.cardId);
       if (!card) return error(socket, "Esa carta no está en tu mano.");
 
-      yo.hand = yo.hand.filter((c) => c.id !== card.id);
-      yo.mesa = Math.max(0, yo.mesa - 1);
+      yo.choiceId = card.id;
 
-      const outcome = resolverCarta(card, yo.entity, rival.entity);
-      const winner: Seat | null =
-        rival.entity.vida <= 0 ? seat : yo.entity.vida <= 0 ? otro(seat) : null;
+      // Aún falta que elija el otro: se avisa a ambos (sin revelar cuál carta es)
+      if (room.slots.some((s) => s.choiceId === null)) {
+        room.slots.forEach((_, s) => {
+          const payload: OnlineChoicePayload = {
+            myChoiceId: room.slots[s].choiceId,
+            rivalChose: room.slots[otro(s as Seat)].choiceId !== null
+          };
+          emitToSeat(room, s as Seat, "game:choice", payload);
+        });
+        return;
+      }
 
-      room.pending = { seat, card, outcome, winner };
-      room.slots.forEach((s) => (s.continued = false));
+      // Ya eligieron los dos: las cartas salen de la mano y se encuentran
+      const cards = room.slots.map((sl) => sl.hand.find((c) => c.id === sl.choiceId) as Card) as [Card, Card];
+      room.slots.forEach((sl) => {
+        sl.hand = sl.hand.filter((c) => c.id !== sl.choiceId);
+        sl.mesa = Math.max(0, sl.mesa - 1);
+      });
+
+      const res = resolverEncuentro(cards[0], cards[1], room.slots[0].entity, room.slots[1].entity);
+      room.slots[0].entity = res.a;
+      room.slots[1].entity = res.b;
+      room.pending = { cards, outcomes: [res.outcomeA, res.outcomeB], winner: res.ganador };
+      room.slots.forEach((sl) => (sl.continued = false));
 
       room.slots.forEach((_, s) => {
         const me = room.slots[s];
         const rv = room.slots[otro(s as Seat)];
-        const payload: OnlinePlayedPayload = {
-          card,
-          playedByMe: s === seat,
-          outcome,
+        const payload: OnlineClashPayload = {
+          mine: cards[s],
+          rival: cards[otro(s as Seat)],
+          outcomeMine: room.pending!.outcomes[s],
+          outcomeRival: room.pending!.outcomes[otro(s as Seat)],
           state: {
             me: { ...me.entity },
             rival: { ...rv.entity },
@@ -608,10 +441,10 @@ export function registerRoomHandlers(io: Server) {
             hand: me.hand.map((c) => ({ ...c }))
           }
         };
-        emitToSeat(room, s as Seat, "game:played", payload);
+        emitToSeat(room, s as Seat, "game:clash", payload);
       });
 
-      room.advanceTimer = setTimeout(() => avanzarTurno(room), REVEAL_MS);
+      room.advanceTimer = setTimeout(() => avanzarRonda(room), REVEAL_MS);
     });
 
     // -------------------------------------------------------------- continuar
@@ -622,7 +455,7 @@ export function registerRoomHandlers(io: Server) {
       if (!slot) return;
       slot.continued = true;
       // Avanza cuando todos los CONECTADOS ya pulsaron continuar.
-      if (room.slots.every((s) => s.continued || !s.socketId)) avanzarTurno(room);
+      if (room.slots.every((s) => s.continued || !s.socketId)) avanzarRonda(room);
     });
 
     // ------------------------------------------------------------ desconexión
@@ -636,7 +469,7 @@ export function registerRoomHandlers(io: Server) {
       notificarRival(room);
       // Si estaban esperando "Continuar" solo de este jugador, se libera.
       if (room.pending && room.slots.every((s) => s.continued || !s.socketId)) {
-        avanzarTurno(room);
+        avanzarRonda(room);
       }
       slot.dropTimer = setTimeout(
         () => destruirSala(room, "rival_left"),

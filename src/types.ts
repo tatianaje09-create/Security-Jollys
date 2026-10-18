@@ -26,11 +26,22 @@ export interface CardActionOutcome {
   impacto?: string;
 }
 
+// Un lado del "encuentro": la carta que puso un jugador y lo que le pasó
+export interface LadoEncuentro {
+  card: Card;
+  playedBy: string;
+  resultado?: CardActionOutcome;
+}
+
+// Cartas en la mesa. Siempre se muestran las DOS cartas que se encuentran:
+// `card` es la del lado izquierdo (tú / jugador 1) y `segunda` la del derecho (IA / rival / jugador 2).
+// `resultado` es un resultado compartido (modos 1 jugador); en 2 jugadores cada lado trae el suyo.
 export interface ActivePlayedCardState {
   card: Card;
   playedBy: string;
   isFlipped: boolean;
   resultado?: CardActionOutcome;
+  segunda?: LadoEncuentro;
 }
 
 export interface PlayerEntity {
@@ -83,11 +94,14 @@ export interface OnlineSnapshot {
   meMesa: number;
   rivalMesa: number;
   hand: Card[]; // solo mi mano (la del rival nunca sale del servidor)
-  myTurn: boolean;
+  myTurn: boolean; // true = puedo elegir carta ahora mismo
   rivalConnected: boolean;
-  pending: null | { card: Card; playedByMe: boolean; outcome: OnlineOutcome };
+  // Encuentro ya resuelto: mi carta, la del rival y lo que hizo cada una
+  pending: null | { mine: Card; rival: Card; outcomeMine: OnlineOutcome; outcomeRival: OnlineOutcome };
+  myChoiceId: string | null; // carta que ya elegí (el rival no la ve hasta el encuentro)
+  rivalChose: boolean; // el rival ya eligió (sin saber cuál)
   waitingContinue: boolean; // ya pulsé "Continuar" y espero al rival
-  result: "win" | "lose" | null;
+  result: "win" | "lose" | "draw" | null;
 }
 
 export interface OnlineSyncPayload {
@@ -95,10 +109,18 @@ export interface OnlineSyncPayload {
   resumed: boolean; // false = la partida acaba de empezar
 }
 
-export interface OnlinePlayedPayload {
-  card: Card;
-  playedByMe: boolean;
-  outcome: OnlineOutcome;
+// Alguien (yo o el rival) eligió carta; las cartas siguen ocultas hasta que ambos elijan
+export interface OnlineChoicePayload {
+  myChoiceId: string | null;
+  rivalChose: boolean;
+}
+
+// Ambos eligieron: las dos cartas se encuentran y se conoce el resultado de cada una
+export interface OnlineClashPayload {
+  mine: Card;
+  rival: Card;
+  outcomeMine: OnlineOutcome;
+  outcomeRival: OnlineOutcome;
   state: {
     me: PlayerEntity;
     rival: PlayerEntity;

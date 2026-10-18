@@ -136,6 +136,20 @@ export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose }) => {
             </ul>
           </div>
 
+          {/* 2 jugadores */}
+          <div className="p-3.5 rounded-xl bg-sky-950/30 border border-sky-500/30">
+            <h4 className="font-['Cinzel'] font-bold text-xs text-sky-300 uppercase tracking-wider mb-1">
+              2 Jugadores: las cartas se encuentran
+            </h4>
+            <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-400">
+              <li>Los dos jugadores eligen una carta <strong>en secreto</strong>. Hasta que ambos hayan elegido no se sabe nada del resultado.</li>
+              <li>Entonces las dos cartas se voltean a la vez y <strong>se encuentran</strong>: solo ahí se sabe si el ataque funcionó.</li>
+              <li>Si el rival jugó el control correcto (Phishing→2FA, Malware→Antivirus, DDoS→Firewall, Jolly Ataque→Jolly Defensa), el ataque queda <strong>bloqueado</strong>. Si no, se juega con su probabilidad.</li>
+              <li>Una defensa siempre cura a quien la juega. Las defensas actúan primero y después llegan los ataques.</li>
+              <li>Si las dos empresas se quedan sin vidas en el mismo encuentro, es un <strong>empate</strong>.</li>
+            </ul>
+          </div>
+
           {/* Rondas y Mesa */}
           <div className="p-3.5 rounded-xl bg-black/30 border border-white/5">
             <h4 className="font-['Cinzel'] font-bold text-xs text-amber-300 uppercase tracking-wider mb-1">
