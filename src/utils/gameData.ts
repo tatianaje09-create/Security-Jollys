@@ -107,12 +107,20 @@ export const MAZO_BASE: Card[] = [
   }
 ];
 
+/**
+ * Reparte 3 cartas DISTINTAS (sin repetir tipo dentro de la misma mano).
+ * Se mezcla el mazo (Fisher-Yates) y se toman las 3 primeras, así nunca salen
+ * dos cartas iguales en una mano (p. ej. dos Jolly Ataque).
+ */
 export function repartirTresCartas(): Card[] {
-  const mano: Card[] = [];
-  for (let i = 0; i < 3; i++) {
-    const randomIndex = Math.floor(Math.random() * MAZO_BASE.length);
-    // clone to avoid reference overlap
-    mano.push({ ...MAZO_BASE[randomIndex], id: `${MAZO_BASE[randomIndex].id}-${Date.now()}-${Math.random()}` });
+  const barajado = [...MAZO_BASE];
+  for (let i = barajado.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [barajado[i], barajado[j]] = [barajado[j], barajado[i]];
   }
-  return mano;
+  return barajado.slice(0, 3).map((base) => ({
+    ...base,
+    // id único por carta (el prefijo antes del primer "-" sigue siendo el id base)
+    id: `${base.id}-${Date.now()}-${Math.random()}`
+  }));
 }

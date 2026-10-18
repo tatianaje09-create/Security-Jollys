@@ -147,7 +147,12 @@ const MiniCarta: React.FC<{ card: Card; retraso?: number }> = ({ card, retraso =
 
   return (
     <div
-      style={{ width: "clamp(58px, calc(var(--vh) * 11), 100px)", aspectRatio: "195 / 275", perspective: "700px" }}
+      style={{
+        // Cartas grandes para que se lea el texto: crecen con la pantalla (y nunca más de 30% del ancho)
+        width: "min(clamp(104px, calc(var(--vh) * 20), 190px), calc(var(--vw) * 30))",
+        aspectRatio: "195 / 275",
+        perspective: "700px"
+      }}
       title={volteada ? `${card.nombre}: ${card.objetivo}` : "Carta de la IA"}
     >
       <div
@@ -261,6 +266,9 @@ export default function App() {
   const [rivalEligio, setRivalEligio] = useState<boolean>(false); // el rival ya eligió (sin saber cuál)
   // 2 jugadores en un dispositivo: carta que eligió el JUGADOR 1 (oculta hasta que elija el JUGADOR 2)
   const [eleccionJ1, setEleccionJ1] = useState<Card | null>(null);
+  // 2 jugadores en un dispositivo: pantalla de relevo ("Turno del JUGADOR X") que tapa las cartas
+  // hasta que el siguiente jugador pulse "Siguiente". null = sin pantalla de relevo.
+  const [relevoLocal, setRelevoLocal] = useState<1 | 2 | null>(null);
 
   // Players state
   const [jugador, setJugador] = useState<PlayerEntity>({
@@ -524,6 +532,7 @@ export default function App() {
     setAtaqueReal(null);
     setTiempoRestante(null);
     setEleccionJ1(null);
+    setRelevoLocal(null);
     setScreen("INICIO");
   };
 
@@ -796,6 +805,7 @@ export default function App() {
     setAtaqueReal(null);
     setTiempoRestante(null);
     setEleccionJ1(null);
+    setRelevoLocal(null);
     setMiEleccionId(null);
     setRivalEligio(false);
 
@@ -1005,6 +1015,7 @@ export default function App() {
           setManoJugador2((prev) => (prev.length === 0 ? repartirTresCartas() : prev));
           checkNuevaRonda(nuevaMesaJ1, nuevaMesaJ2);
           setTurnoJugador(true); // vuelve a elegir primero el JUGADOR 1
+          setRelevoLocal(1); // pantalla de relevo: nadie ve las cartas del JUGADOR 1 hasta pulsar "Siguiente"
         };
         pendingTurnAdvanceRef.current = advance;
         turnAdvanceTimerRef.current = setTimeout(() => {
@@ -1036,7 +1047,7 @@ export default function App() {
       onlineTimersRef.current.push(t);
       return;
     }
-    if (animatingCardId || activePlayedCard) return; // Prevent double trigger
+    if (animatingCardId || activePlayedCard || relevoLocal !== null) return; // Prevent double trigger
 
     // 1 JUGADOR: el jugador solo defiende; la IA ya tiene su ataque decidido
     if (!modoDosJugadores) {
@@ -1060,7 +1071,7 @@ export default function App() {
         // JUGADOR 1 elige: su carta queda boca abajo y le toca elegir al JUGADOR 2 (sin mirar)
         setEleccionJ1(carta);
         setTurnoJugador(false);
-        showCentralMessage("✅ JUGADOR 1 ya eligió. Ahora elige JUGADOR 2 (JUGADOR 1, no mires)");
+        setRelevoLocal(2); // pantalla de relevo: oculta las cartas hasta que el JUGADOR 2 pulse "Siguiente"
         return;
       }
       // JUGADOR 2 elige: ya están las dos cartas, se encuentran
@@ -1548,6 +1559,7 @@ export default function App() {
               cartasMesaJugador={cartasMesaJugador}
               cartasMesaIA={cartasMesaIA}
               onDropCard={(e) => {
+                if (relevoLocal !== null) return;
                 if (online ? !turnoJugador || !!miEleccionId : !turnoJugador && !modoDosJugadores) return;
                 // Juega la carta que se arrastró (si no se puede saber cuál, la primera)
                 const idArrastrada = e?.dataTransfer?.getData("text/plain");
@@ -1559,7 +1571,7 @@ export default function App() {
             {/* 1 JUGADOR: la IA muestra la(s) carta(s) de ataque de las que lanzará UNA; el jugador elige su defensa */}
             {!modoDosJugadores && !online && !activePlayedCard && ataquesAnunciados.length > 0 && (
               <div
-                className="absolute left-1/2 top-[21%] -translate-x-1/2 z-[35] flex flex-col items-center gap-2 pointer-events-none"
+                className="absolute left-1/2 top-[17%] -translate-x-1/2 z-[35] flex flex-col items-center gap-2 pointer-events-none"
                 style={{ maxWidth: "calc(var(--vw) * 94)" }}
               >
                 <div className="px-4 py-1.5 rounded-2xl bg-emerald-950/90 border border-emerald-400/60 text-emerald-200 text-xs sm:text-sm font-bold text-center shadow-[0_6px_20px_rgba(0,0,0,0.7)]">
@@ -1571,7 +1583,7 @@ export default function App() {
                     : `La IA lanzará UNA de estas ${ataquesAnunciados.length} cartas`}{" "}
                   — ¡elige tu defensa!
                 </div>
-                <div className="flex items-end justify-center gap-3">
+                <div className="flex items-end justify-center gap-4 sm:gap-6">
                   {ataquesAnunciados.map((c, i) => (
                     <MiniCarta key={c.id} card={c} retraso={i * 300} />
                   ))}
@@ -1669,6 +1681,43 @@ export default function App() {
                 esperando={online && yaContinue}
                 autoCloseDuration={10000}
               />
+            )}
+
+            {/* 2 JUGADORES (mismo dispositivo): pantalla de relevo que tapa las cartas del otro jugador */}
+            {!online && modoDosJugadores && relevoLocal !== null && !activePlayedCard && (
+              <div className="absolute inset-0 z-[70] flex items-center justify-center bg-[#07080d]/[0.97] backdrop-blur-md px-4">
+                <div
+                  className={`flex flex-col items-center text-center bg-[#10121c] border-2 border-amber-400/80 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.95)] ${
+                    compact ? "px-5 py-4 gap-2" : "px-10 py-8 gap-4"
+                  }`}
+                  style={{ maxWidth: "calc(var(--vw) * 92)" }}
+                >
+                  <div className={compact ? "text-3xl" : "text-5xl"}>🔒</div>
+                  <h2 className={`font-black text-amber-300 tracking-wide ${compact ? "text-xl" : "text-3xl md:text-4xl"}`}>
+                    Turno del JUGADOR {relevoLocal}
+                  </h2>
+                  <p className={`text-slate-200 ${compact ? "text-xs" : "text-base md:text-lg"}`}>
+                    {relevoLocal === 2
+                      ? "JUGADOR 1 ya eligió. JUGADOR 1, aparta la vista y pásale el dispositivo al JUGADOR 2."
+                      : "JUGADOR 2, aparta la vista y pásale el dispositivo al JUGADOR 1."}
+                  </p>
+                  <p className={`text-slate-400 ${compact ? "text-[10px]" : "text-sm"}`}>
+                    Cuando estés listo, pulsa Siguiente para ver tus cartas.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playButtonClick();
+                      setRelevoLocal(null);
+                    }}
+                    className={`mt-1 rounded-xl font-bold tracking-wider text-amber-100 uppercase bg-gradient-to-b from-[#991b1b] via-[#851414] to-[#540909] border-2 border-amber-400/80 shadow-[0_6px_20px_rgba(0,0,0,0.7),inset_0_1px_1px_rgba(255,255,255,0.25)] hover:from-[#b91c1c] hover:border-amber-300 hover:scale-105 active:scale-95 transition-all duration-150 cursor-pointer ${
+                      compact ? "px-6 py-2 text-sm" : "px-10 py-3 text-xl"
+                    }`}
+                  >
+                    Siguiente ▶
+                  </button>
+                </div>
+              </div>
             )}
 
             {/* MENSAJE CENTRAL (JLabel mensajeCentral in Java) */}
