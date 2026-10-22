@@ -139,14 +139,16 @@ export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose }) => {
           {/* 2 jugadores */}
           <div className="p-3.5 rounded-xl bg-sky-950/30 border border-sky-500/30">
             <h4 className="font-['Cinzel'] font-bold text-xs text-sky-300 uppercase tracking-wider mb-1">
-              2 Jugadores: las cartas se encuentran
+              2 Jugadores: Atacante vs Defensor
             </h4>
             <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-400">
-              <li>Los dos jugadores eligen una carta <strong>en secreto</strong>. Hasta que ambos hayan elegido no se sabe nada del resultado.</li>
-              <li>Entonces las dos cartas se voltean a la vez y <strong>se encuentran</strong>: solo ahí se sabe si el ataque funcionó.</li>
-              <li>Si el rival jugó el control correcto (Phishing→2FA, Malware→Antivirus, DDoS→Firewall, Jolly Ataque→Jolly Defensa), el ataque queda <strong>bloqueado</strong>. Si no, se juega con su probabilidad. El Jolly Ataque quita como máximo 2 vidas: nunca elimina de golpe a una empresa con 3 vidas.</li>
-              <li>Una defensa cura +1 vida solo si el rival no ataca en ese turno. Si te atacan, la defensa únicamente sirve si es el control correcto (lo bloquea); si no, no recuperas vida y el ataque sigue su curso. Las defensas actúan primero y después llegan los ataques. El Jolly Defensa recupera +2 vidas (máximo 3).</li>
-              <li>Si las dos empresas se quedan sin vidas en el mismo encuentro, es un <strong>empate</strong>.</li>
+              <li>En cada ronda un jugador es el <strong>ATACANTE</strong> (recibe 3 ataques) y el otro el <strong>DEFENSOR</strong> (recibe 3 defensas). Los roles se <strong>alternan</strong> cada ronda.</li>
+              <li>El atacante elige un ataque en secreto. Al defensor se le muestran <strong>2 cartas anunciadas</strong> (50 % / 50 %): la real y un señuelo.</li>
+              <li>Defensa correcta (Phishing→2FA, Malware→Antivirus, DDoS→Firewall, Jolly Ataque→Jolly Defensa): el ataque se <strong>bloquea</strong> y el atacante pierde 1 vida por el contraataque.</li>
+              <li>Defensa incorrecta: el ataque entra con su probabilidad y quita 1 vida. El Jolly Ataque quita como máximo 2 vidas.</li>
+              <li>El Jolly Defensa siempre recupera +2 vidas (máximo 3). Las demás defensas no curan en este modo.</li>
+              <li>Gana quien deje al rival sin vidas.</li>
+              <li>El modo en línea (cada uno en su dispositivo) sigue usando el sistema clásico, donde ambos eligen una carta a la vez.</li>
             </ul>
           </div>
 

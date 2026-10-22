@@ -320,3 +320,54 @@ export function resolverEncuentro(
     ganador
   };
 }
+
+export interface ResultadoDuelo {
+  atacante: PlayerEntity;
+  defensor: PlayerEntity;
+  outcomeAtacante: OnlineOutcome;
+  outcomeDefensor: OnlineOutcome;
+  ganador: "atacante" | "defensor" | null;
+}
+
+/**
+ * DUELO (2 jugadores, mismo dispositivo): un jugador ataca y el otro defiende.
+ *  - Defensa correcta: el ataque queda bloqueado Y el atacante pierde 1 vida por el contraataque.
+ *  - Defensa incorrecta: el ataque entra con su probabilidad (Jolly Ataque: máx. -2) y no hay curación.
+ *  - Jolly Defensa: siempre recupera +2 vidas (máx. 3); además bloquea y contraataca al Jolly Ataque.
+ * No muta los argumentos.
+ */
+export function resolverDuelo(
+  cartaAtaque: Card,
+  cartaDefensa: Card,
+  atacante: PlayerEntity,
+  defensor: PlayerEntity,
+  azar: () => number = Math.random
+): ResultadoDuelo {
+  const res = resolverEncuentro(cartaAtaque, cartaDefensa, atacante, defensor, azar);
+  const a = res.a;
+  const d = res.b;
+  let oa = res.outcomeA;
+  let od = res.outcomeB;
+
+  if (bloquea(cartaDefensa, cartaAtaque)) {
+    a.vida = Math.max(0, a.vida - 1);
+    oa = {
+      ...oa,
+      detalle: `${oa.detalle} ¡Contraataque! ${a.nombre} pierde 1 vida.`,
+      impacto: "Bloqueado · -1 ♥ al atacante"
+    };
+    od = {
+      ...od,
+      detalle: `${od.detalle} ¡Contraataque: ${a.nombre} pierde 1 vida!`,
+      impacto: baseId(cartaDefensa) === "jolly_defensa" ? "+2 ♥ y contraataque" : "Contraataque -1 ♥ al rival"
+    };
+  }
+
+  return {
+    atacante: a,
+    defensor: d,
+    outcomeAtacante: oa,
+    outcomeDefensor: od,
+    ganador: d.vida <= 0 ? "atacante" : a.vida <= 0 ? "defensor" : null
+  };
+}

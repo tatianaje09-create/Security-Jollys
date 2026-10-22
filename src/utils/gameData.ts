@@ -124,3 +124,21 @@ export function repartirTresCartas(): Card[] {
     id: `${base.id}-${Date.now()}-${Math.random()}`
   }));
 }
+
+/**
+ * DUELO (2 jugadores): el Atacante recibe 3 cartas de ataque distintas (de Phishing, Malware, DDoS
+ * y Jolly Ataque) y el Defensor 3 defensas distintas (2FA, Antivirus, Firewall y Jolly Defensa).
+ */
+export function repartirManosDuelo(): { ataque: Card[]; defensa: Card[] } {
+  const tres = (pool: Card[]): Card[] => {
+    const b = [...pool];
+    for (let i = b.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [b[i], b[j]] = [b[j], b[i]];
+    }
+    return b.slice(0, 3).map((c) => ({ ...c, id: `${c.id}-${Date.now()}-${Math.random()}` }));
+  };
+  const ataques = MAZO_BASE.filter((c) => c.tipo === "ATAQUE" || c.id === "jolly_ataque");
+  const defensas = MAZO_BASE.filter((c) => c.tipo === "DEFENSA" || c.id === "jolly_defensa");
+  return { ataque: tres(ataques), defensa: tres(defensas) };
+}

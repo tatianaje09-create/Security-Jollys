@@ -16,8 +16,8 @@ import {
   OnlineSyncPayload,
   OnlineTurnPayload
 } from "./types";
-import { MAZO_BASE, repartirTresCartas } from "./utils/gameData";
-import { resolverEncuentro } from "./utils/encuentro";
+import { MAZO_BASE, repartirTresCartas, repartirManosDuelo } from "./utils/gameData";
+import { resolverEncuentro, resolverDuelo } from "./utils/encuentro";
 
 // --- Modos de 1 JUGADOR (vs IA): la IA SOLO ATACA y el jugador SOLO DEFIENDE ---------
 // (el modo 2 jugadores no usa nada de esto)
@@ -271,6 +271,9 @@ export default function App() {
   const [relevoLocal, setRelevoLocal] = useState<1 | 2 | null>(null);
   // true = es la pantalla de bienvenida al empezar la partida (antes de la primera jugada)
   const [relevoInicio, setRelevoInicio] = useState<boolean>(false);
+  // 2 jugadores (duelo): quién ATACA en esta ronda (el otro DEFIENDE). Se alternan cada ronda.
+  // eleccionJ1 guarda la carta de ataque ya elegida por el atacante (null = aún elige el atacante).
+  const [rolAtacante, setRolAtacante] = useState<1 | 2>(1);
 
   // Players state
   const [jugador, setJugador] = useState<PlayerEntity>({
@@ -776,6 +779,17 @@ export default function App() {
     rondaResueltaRef.current = false;
   };
 
+  // 2 JUGADORES (duelo): reparte la ronda. El atacante recibe 3 ataques y el defensor 3 defensas.
+  const repartirRondaDuelo = (atacante: 1 | 2) => {
+    const m = repartirManosDuelo();
+    setRolAtacante(atacante);
+    setManoJugador(atacante === 1 ? m.ataque : m.defensa);
+    setManoJugador2(atacante === 1 ? m.defensa : m.ataque);
+    setEleccionJ1(null);
+    setAtaquesAnunciados([]);
+    setTurnoJugador(atacante === 1); // elige primero el atacante
+  };
+
   // Start game flow: iniciarJuego(boolean dosJugadores, Dificultad dif)
   const iniciarJuego = (dosJugadores: boolean, nivel: Dificultad) => {
     playButtonClick();
@@ -814,9 +828,8 @@ export default function App() {
     setRivalEligio(false);
 
     if (dosJugadores) {
-      // 2 JUGADORES: cada uno con 3 cartas al azar del mazo completo (sin cambios)
-      setManoJugador(repartirTresCartas());
-      setManoJugador2(repartirTresCartas());
+      // 2 JUGADORES (duelo): empieza atacando el JUGADOR 1; el JUGADOR 2 defiende
+      repartirRondaDuelo(1);
     } else {
       // 1 JUGADOR: la IA anuncia sus ataques y el jugador recibe solo defensas
       setManoJugador2([]);
@@ -965,29 +978,36 @@ export default function App() {
   };
 
   // ======================================================================
-  // 2 JUGADORES en un dispositivo: los dos eligen carta en secreto y SOLO cuando ambos
-  // han elegido se descubren las dos cartas, se encuentran y se sabe si el ataque funcionó.
-  // (La resolución es la misma que usa el servidor en línea: utils/encuentro.ts)
+  // 2 JUGADORES en un dispositivo: DUELO Atacante vs Defensor (los roles se alternan cada ronda).
+  // El atacante elige un ataque en secreto y se anuncian 2 cartas (la real y un señuelo); el
+  // defensor ve las 2 y elige su defensa. Al elegir, se descubren las dos cartas y se resuelve.
+  // (Reglas en utils/encuentro.ts -> resolverDuelo)
   // ======================================================================
-  const resolverEncuentroLocal = (cartaJ1: Card, cartaJ2: Card) => {
+  const resolverDueloLocal = (cartaAtaque: Card, cartaDefensa: Card) => {
+    const atacanteEsJ1 = rolAtacante === 1;
     const nuevaMesaJ1 = Math.max(0, cartasMesaJugador - 1);
     const nuevaMesaJ2 = Math.max(0, cartasMesaIA - 1);
+    const nombreAtacante = `JUGADOR ${rolAtacante}`;
+    const nombreDefensor = `JUGADOR ${atacanteEsJ1 ? 2 : 1}`;
 
-    // Las dos cartas salen de las manos y ambos gastan una carta de la mesa
-    setManoJugador((prev) => prev.filter((c) => c.id !== cartaJ1.id));
-    setManoJugador2((prev) => prev.filter((c) => c.id !== cartaJ2.id));
     setEleccionJ1(null);
+    setAtaquesAnunciados([]);
     setCartasMesaJugador(nuevaMesaJ1);
     setCartasMesaIA(nuevaMesaJ2);
 
-    const res = resolverEncuentro(cartaJ1, cartaJ2, jugador, ia);
+    const res = resolverDuelo(
+      cartaAtaque,
+      cartaDefensa,
+      atacanteEsJ1 ? jugador : ia,
+      atacanteEsJ1 ? ia : jugador
+    );
 
-    // PASO 1: las dos cartas aparecen boca abajo en la mesa
+    // PASO 1: las dos cartas aparecen boca abajo en la mesa (ataque a la izquierda, defensa a la derecha)
     setActivePlayedCard({
-      card: cartaJ1,
-      playedBy: "JUGADOR 1",
+      card: cartaAtaque,
+      playedBy: `${nombreAtacante} · ATACA`,
       isFlipped: false,
-      segunda: { card: cartaJ2, playedBy: "JUGADOR 2" }
+      segunda: { card: cartaDefensa, playedBy: `${nombreDefensor} · DEFIENDE` }
     });
 
     // PASO 2: a los 350ms se voltean las dos
@@ -997,29 +1017,33 @@ export default function App() {
 
       // PASO 3: tras voltearse (550ms) se aplican los efectos y se muestra qué pasó con cada carta
       programarLocal(() => {
-        setJugador(res.a);
-        setIa(res.b);
-        reproducirFx(res.outcomeA.fx);
-        reproducirFx(res.outcomeB.fx);
+        if (atacanteEsJ1) {
+          setJugador(res.atacante);
+          setIa(res.defensor);
+        } else {
+          setIa(res.atacante);
+          setJugador(res.defensor);
+        }
+        reproducirFx(res.outcomeAtacante.fx);
+        reproducirFx(res.outcomeDefensor.fx);
         setActivePlayedCard((prev) =>
           prev
             ? {
                 ...prev,
                 isFlipped: true,
-                resultado: res.outcomeA,
-                segunda: prev.segunda ? { ...prev.segunda, resultado: res.outcomeB } : undefined
+                resultado: res.outcomeAtacante,
+                segunda: prev.segunda ? { ...prev.segunda, resultado: res.outcomeDefensor } : undefined
               }
             : null
         );
 
-        // PASO 4: resultado visible 10 s (o hasta pulsar Continuar); luego empieza la siguiente jugada
+        // PASO 4: resultado visible 10 s (o hasta pulsar Continuar); luego se invierten los roles
         const advance = () => {
           setActivePlayedCard(null);
-          setManoJugador((prev) => (prev.length === 0 ? repartirTresCartas() : prev));
-          setManoJugador2((prev) => (prev.length === 0 ? repartirTresCartas() : prev));
+          const nuevoAtacante: 1 | 2 = atacanteEsJ1 ? 2 : 1;
+          repartirRondaDuelo(nuevoAtacante);
           checkNuevaRonda(nuevaMesaJ1, nuevaMesaJ2);
-          setTurnoJugador(true); // vuelve a elegir primero el JUGADOR 1
-          setRelevoLocal(1); // pantalla de relevo: nadie ve las cartas del JUGADOR 1 hasta pulsar "Siguiente"
+          setRelevoLocal(nuevoAtacante); // pantalla de relevo: nadie ve las cartas hasta pulsar "Siguiente"
         };
         pendingTurnAdvanceRef.current = advance;
         turnAdvanceTimerRef.current = setTimeout(() => {
@@ -1066,20 +1090,25 @@ export default function App() {
       return;
     }
 
-    // ---- 2 JUGADORES (mismo dispositivo): cada uno elige en secreto, luego se encuentran las cartas ----
+    // ---- 2 JUGADORES (mismo dispositivo): DUELO Atacante vs Defensor ----
     playCardPlaySound();
     setAnimatingCardId(carta.id);
     programarLocal(() => {
       setAnimatingCardId(null);
-      if (turnoJugador) {
-        // JUGADOR 1 elige: su carta queda boca abajo y le toca elegir al JUGADOR 2 (sin mirar)
+      if (!eleccionJ1) {
+        // El ATACANTE elige su ataque. Se anuncian 2 cartas: la real y un señuelo de su mano (en orden aleatorio)
+        const señuelos = manoActual.filter((c) => c.id !== carta.id);
+        const señuelo = señuelos[Math.floor(Math.random() * señuelos.length)];
+        const anunciadas = señuelo ? (Math.random() < 0.5 ? [carta, señuelo] : [señuelo, carta]) : [carta];
         setEleccionJ1(carta);
-        setTurnoJugador(false);
-        setRelevoLocal(2); // pantalla de relevo: oculta las cartas hasta que el JUGADOR 2 pulse "Siguiente"
+        setAtaquesAnunciados(anunciadas);
+        const defensor: 1 | 2 = rolAtacante === 1 ? 2 : 1;
+        setTurnoJugador(defensor === 1);
+        setRelevoLocal(defensor); // pantalla de relevo: el defensor ve solo las 2 cartas anunciadas
         return;
       }
-      // JUGADOR 2 elige: ya están las dos cartas, se encuentran
-      if (eleccionJ1) resolverEncuentroLocal(eleccionJ1, carta);
+      // El DEFENSOR elige su defensa: se resuelve el duelo
+      resolverDueloLocal(eleccionJ1, carta);
     }, 200);
   };
 
@@ -1518,9 +1547,9 @@ export default function App() {
                     : modoDosJugadores
                     ? activePlayedCard
                       ? "Las cartas se encuentran"
-                      : turnoJugador
-                      ? "JUGADOR 1: elige tu carta"
-                      : "JUGADOR 2: elige tu carta"
+                      : !eleccionJ1
+                      ? `⚔️ JUGADOR ${turnoJugador ? 1 : 2} (ATACANTE): elige tu ataque`
+                      : `🛡 JUGADOR ${turnoJugador ? 1 : 2} (DEFENSOR): elige tu defensa`
                     : turnoJugador
                     ? "🛡 Elige tu defensa"
                     : "Turno: IA"}
@@ -1573,14 +1602,16 @@ export default function App() {
             />
 
             {/* 1 JUGADOR: la IA muestra la(s) carta(s) de ataque de las que lanzará UNA; el jugador elige su defensa */}
-            {!modoDosJugadores && !online && !activePlayedCard && ataquesAnunciados.length > 0 && (
+            {!online && !activePlayedCard && ataquesAnunciados.length > 0 && (!modoDosJugadores || (!!eleccionJ1 && relevoLocal === null)) && (
               <div
                 className="absolute left-1/2 top-[17%] -translate-x-1/2 z-[35] flex flex-col items-center gap-2 pointer-events-none"
                 style={{ maxWidth: "calc(var(--vw) * 94)" }}
               >
                 <div className="px-4 py-1.5 rounded-2xl bg-emerald-950/90 border border-emerald-400/60 text-emerald-200 text-xs sm:text-sm font-bold text-center shadow-[0_6px_20px_rgba(0,0,0,0.7)]">
-                  🤖{" "}
-                  {ataquesAnunciados.length === 1
+                  {modoDosJugadores ? "⚔️" : "🤖"}{" "}
+                  {modoDosJugadores
+                    ? `El JUGADOR ${rolAtacante} lanzará UNA de estas 2 cartas (50 % / 50 %)`
+                    : ataquesAnunciados.length === 1
                     ? `La IA lanzará: ${ataquesAnunciados[0].nombre} (${ataquesAnunciados[0].objetivo})`
                     : dificultad === "NORMAL"
                     ? "La IA lanzará UNA de estas 2 cartas (50 % / 50 %)"
@@ -1645,26 +1676,6 @@ export default function App() {
               </div>
             )}
 
-            {/* 2 jugadores en un dispositivo: la carta del JUGADOR 1 ya está elegida y boca abajo */}
-            {!online && modoDosJugadores && !activePlayedCard && eleccionJ1 && (
-              <div
-                className="absolute left-1/2 top-[27%] -translate-x-1/2 z-[35] flex flex-col items-center gap-2 pointer-events-none"
-                style={{ maxWidth: "calc(var(--vw) * 94)" }}
-              >
-                <div className="px-4 py-1.5 rounded-2xl bg-emerald-950/90 border border-emerald-400/60 text-emerald-200 text-xs sm:text-sm font-bold text-center shadow-[0_6px_20px_rgba(0,0,0,0.7)]">
-                  ✅ JUGADOR 1 ya eligió (carta oculta) — ahora elige JUGADOR 2
-                </div>
-                <div style={{ width: "clamp(58px, calc(var(--vh) * 11), 100px)", aspectRatio: "195 / 275" }}>
-                  <img
-                    src="/img/dorso.png"
-                    alt="Carta del jugador 1"
-                    className="w-full h-full object-cover rounded-lg border-2 border-amber-400/80 shadow-[0_6px_16px_rgba(0,0,0,0.9)]"
-                    draggable={false}
-                  />
-                </div>
-              </div>
-            )}
-
             {/* Aviso: el rival perdió la conexión (en línea) */}
             {online && !rivalConectado && (
               <div className="absolute left-1/2 top-[38%] -translate-x-1/2 z-[35] px-4 py-2 rounded-full bg-rose-950/95 border border-rose-400/70 text-rose-200 text-xs sm:text-sm font-bold animate-pulse text-center pointer-events-none" style={{ maxWidth: "calc(var(--vw) * 90)" }}>
@@ -1700,12 +1711,16 @@ export default function App() {
                   <h2 className={`font-black text-amber-300 tracking-wide ${compact ? "text-xl" : "text-3xl md:text-4xl"}`}>
                     {relevoInicio ? "¡Va a empezar la partida!" : `Turno del JUGADOR ${relevoLocal}`}
                   </h2>
+                  <h2 className={`font-black tracking-wide ${!eleccionJ1 ? "text-rose-300" : "text-sky-300"} ${compact ? "text-sm" : "text-xl md:text-2xl"}`}>
+                    {!eleccionJ1 ? "⚔️ Eres el ATACANTE" : "🛡 Eres el DEFENSOR"}
+                  </h2>
                   <p className={`text-slate-200 ${compact ? "text-xs" : "text-base md:text-lg"}`}>
+                    {!eleccionJ1
+                      ? "Elige el ataque que lanzarás. Al defensor se le mostrarán 2 cartas: la real y un señuelo."
+                      : "Verás 2 cartas anunciadas: una es el ataque real. Adivina y elige tu defensa."}{" "}
                     {relevoInicio
-                      ? "Comienza el JUGADOR 1. JUGADOR 2, aparta la vista mientras el JUGADOR 1 ve sus cartas."
-                      : relevoLocal === 2
-                      ? "JUGADOR 1 ya eligió. JUGADOR 1, aparta la vista y pásale el dispositivo al JUGADOR 2."
-                      : "JUGADOR 2, aparta la vista y pásale el dispositivo al JUGADOR 1."}
+                      ? "JUGADOR 2, aparta la vista mientras el JUGADOR 1 ve sus cartas."
+                      : `JUGADOR ${relevoLocal === 1 ? 2 : 1}, aparta la vista y pásale el dispositivo al JUGADOR ${relevoLocal}.`}
                   </p>
                   <p className={`text-slate-400 ${compact ? "text-[10px]" : "text-sm"}`}>
                     {relevoInicio ? "JUGADOR 1, pulsa Comenzar cuando estés listo." : "Cuando estés listo, pulsa Siguiente para ver tus cartas."}
