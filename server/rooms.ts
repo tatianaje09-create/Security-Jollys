@@ -1,6 +1,6 @@
 import type { Server, Socket } from "socket.io";
-import { repartirTresCartas } from "../src/utils/gameData";
-import { resolverEncuentro } from "../src/utils/encuentro";
+import { repartirManosDuelo } from "../src/utils/gameData";
+import { resolverDuelo } from "../src/utils/encuentro";
 import type {
   Card,
   PlayerEntity,
@@ -9,6 +9,7 @@ import type {
   OnlineClashPayload,
   OnlineCloseReason,
   OnlineOutcome,
+  OnlineRole,
   OnlineSnapshot,
   OnlineSyncPayload,
   OnlineTurnPayload
@@ -21,8 +22,10 @@ import type {
  * probabilidad y aplica los efectos. Los clientes solo piden "jugar la carta X"
  * y reciben el resultado. Así nadie puede ver la mano del rival ni hacer trampa.
  *
- * Cada ronda los DOS jugadores eligen carta en secreto; solo cuando ambos han elegido
- * se descubren las dos cartas, se encuentran y se resuelve el resultado (ver utils/encuentro.ts).
+ * DUELO: en cada ronda un jugador es el ATACANTE (3 ataques) y el otro el DEFENSOR (3 defensas);
+ * los roles se alternan. El atacante elige en secreto y el servidor anuncia al defensor 2 cartas
+ * (la real y un señuelo). Cuando el defensor elige, se descubren las dos cartas y se resuelve
+ * (ver resolverDuelo en utils/encuentro.ts).
  *
  * Las salas viven en memoria (se pierden si reinicias el servidor).
  */
@@ -65,11 +68,21 @@ interface Room {
   slots: Slot[]; // 1 (esperando) o 2 (jugando)
   phase: "waiting" | "playing" | "over";
   pending: Pending | null;
+  attacker: Seat; // quién ataca esta ronda (el otro defiende)
+  announced: Card[]; // las 2 cartas anunciadas al defensor (la real y un señuelo)
   advanceTimer: NodeJS.Timeout | null;
   winner: Seat | "empate" | null;
 }
 
 const otro = (s: Seat): Seat => (s === 0 ? 1 : 0);
+
+/** Reparte la ronda: el atacante recibe 3 ataques y el defensor 3 defensas. */
+function repartirRonda(room: Room) {
+  const m = repartirManosDuelo();
+  room.slots[room.attacker].hand = m.ataque;
+  room.slots[otro(room.attacker)].hand = m.defensa;
+  room.announced = [];
+}
 
 function nuevaEntidad(seat: Seat): PlayerEntity {
   return {
@@ -137,6 +150,28 @@ export function registerRoomHandlers(io: Server) {
     });
   };
 
+  const rolDe = (room: Room, seat: Seat): OnlineRole => (room.attacker === seat ? "attacker" : "defender");
+
+  // El defensor solo puede elegir cuando el atacante ya eligió; el atacante elige primero.
+  const puedoElegir = (room: Room, seat: Seat): boolean => {
+    if (room.phase !== "playing" || room.pending || room.slots[seat].choiceId !== null) return false;
+    return room.attacker === seat || room.slots[room.attacker].choiceId !== null;
+  };
+
+  // Solo el defensor ve las 2 cartas anunciadas (y solo después de que el atacante eligió)
+  const anunciadasPara = (room: Room, seat: Seat): Card[] =>
+    room.attacker !== seat && room.slots[room.attacker].choiceId !== null
+      ? room.announced.map((c) => ({ ...c }))
+      : [];
+
+  const choicePayload = (room: Room, seat: Seat): OnlineChoicePayload => ({
+    myChoiceId: room.slots[seat].choiceId,
+    rivalChose: room.slots[otro(seat)].choiceId !== null,
+    myTurn: puedoElegir(room, seat),
+    role: rolDe(room, seat),
+    announced: anunciadasPara(room, seat)
+  });
+
   const snapshotFor = (room: Room, seat: Seat): OnlineSnapshot => {
     const yo = room.slots[seat];
     const rival = room.slots[otro(seat)];
@@ -151,7 +186,9 @@ export function registerRoomHandlers(io: Server) {
       meMesa: yo.mesa,
       rivalMesa: rival.mesa,
       hand: yo.hand.map((c) => ({ ...c })),
-      myTurn: room.phase === "playing" && !pend && yo.choiceId === null,
+      myTurn: puedoElegir(room, seat),
+      role: rolDe(room, seat),
+      announced: anunciadasPara(room, seat),
       rivalConnected: !!rival.socketId,
       pending: pend
         ? {
@@ -252,10 +289,9 @@ export function registerRoomHandlers(io: Server) {
       return;
     }
 
-    // Si un jugador se quedó sin cartas en la mano, se le reparten 3 nuevas.
-    room.slots.forEach((sl) => {
-      if (sl.hand.length === 0) sl.hand = repartirTresCartas();
-    });
+    // Se invierten los roles y se reparte la nueva ronda (3 ataques / 3 defensas)
+    room.attacker = otro(room.attacker);
+    repartirRonda(room);
 
     // Nueva ronda: cuando las 6 cartas de la mesa ya se jugaron.
     let newRound = false;
@@ -289,6 +325,8 @@ export function registerRoomHandlers(io: Server) {
         slots: [nuevoSlot(playerId, socket.id, 0)],
         phase: "waiting",
         pending: null,
+        attacker: 0,
+        announced: [],
         advanceTimer: null,
         winner: null
       };
@@ -344,8 +382,8 @@ export function registerRoomHandlers(io: Server) {
       room.slots.push(nuevoSlot(playerId, socket.id, 1));
       enlazarSocket(room, 1, socket);
       room.phase = "playing";
-      room.slots[0].hand = repartirTresCartas();
-      room.slots[1].hand = repartirTresCartas();
+      room.attacker = 0; // empieza atacando el anfitrión
+      repartirRonda(room);
 
       responder(ack, { ok: true, code, seat: 1, phase: "playing" });
       enviarSync(room, 0, false);
@@ -380,7 +418,7 @@ export function registerRoomHandlers(io: Server) {
     });
 
     // ---------------------------------------------------------- elegir carta
-    // Cada jugador elige en secreto. Cuando ya eligieron los dos, las cartas se encuentran.
+    // El ATACANTE elige primero (en secreto); se anuncian 2 cartas al defensor, que elige después.
     socket.on("game:play", (data: { cardId?: string } | undefined) => {
       const room = rooms.get(socket.data.code as string);
       if (!room) return error(socket, "La sala ya no existe.");
@@ -394,41 +432,51 @@ export function registerRoomHandlers(io: Server) {
       }
 
       const yo = room.slots[seat];
+      const esAtacante = room.attacker === seat;
       if (yo.choiceId !== null) return error(socket, "Ya elegiste tu carta. Espera al rival.");
+      if (!esAtacante && room.slots[room.attacker].choiceId === null) {
+        return error(socket, "Espera a que el atacante elija su ataque.");
+      }
       const card = yo.hand.find((c) => c.id === data?.cardId);
       if (!card) return error(socket, "Esa carta no está en tu mano.");
 
       yo.choiceId = card.id;
 
-      // Aún falta que elija el otro: se avisa a ambos (sin revelar cuál carta es)
-      if (room.slots.some((s) => s.choiceId === null)) {
-        room.slots.forEach((_, s) => {
-          const payload: OnlineChoicePayload = {
-            myChoiceId: room.slots[s].choiceId,
-            rivalChose: room.slots[otro(s as Seat)].choiceId !== null
-          };
-          emitToSeat(room, s as Seat, "game:choice", payload);
-        });
+      if (esAtacante) {
+        // Se anuncian 2 cartas al defensor: la real y un señuelo de la mano del atacante (orden aleatorio)
+        const otras = yo.hand.filter((c) => c.id !== card.id);
+        const senuelo = otras[Math.floor(Math.random() * otras.length)];
+        room.announced = senuelo ? (Math.random() < 0.5 ? [card, senuelo] : [senuelo, card]) : [card];
+        room.slots.forEach((_, s) => emitToSeat(room, s as Seat, "game:choice", choicePayload(room, s as Seat)));
         return;
       }
 
-      // Ya eligieron los dos: las cartas salen de la mano y se encuentran
-      const cards = room.slots.map((sl) => sl.hand.find((c) => c.id === sl.choiceId) as Card) as [Card, Card];
+      // Eligió el defensor: las cartas salen de la mano y se resuelve el duelo
+      const atk = room.slots[room.attacker];
+      const cartaAtaque = atk.hand.find((c) => c.id === atk.choiceId) as Card;
+      const cards: [Card, Card] = room.attacker === 0 ? [cartaAtaque, card] : [card, cartaAtaque];
       room.slots.forEach((sl) => {
         sl.hand = sl.hand.filter((c) => c.id !== sl.choiceId);
         sl.mesa = Math.max(0, sl.mesa - 1);
       });
 
-      const res = resolverEncuentro(cards[0], cards[1], room.slots[0].entity, room.slots[1].entity);
-      room.slots[0].entity = res.a;
-      room.slots[1].entity = res.b;
-      room.pending = { cards, outcomes: [res.outcomeA, res.outcomeB], winner: res.ganador };
+      const res = resolverDuelo(cartaAtaque, card, atk.entity, yo.entity);
+      atk.entity = res.atacante;
+      yo.entity = res.defensor;
+      const outcomes: [OnlineOutcome, OnlineOutcome] =
+        room.attacker === 0
+          ? [res.outcomeAtacante, res.outcomeDefensor]
+          : [res.outcomeDefensor, res.outcomeAtacante];
+      const winner: Seat | null = res.ganador === null ? null : res.ganador === "atacante" ? room.attacker : seat;
+      room.pending = { cards, outcomes, winner };
+      room.announced = [];
       room.slots.forEach((sl) => (sl.continued = false));
 
       room.slots.forEach((_, s) => {
         const me = room.slots[s];
         const rv = room.slots[otro(s as Seat)];
         const payload: OnlineClashPayload = {
+          role: rolDe(room, s as Seat),
           mine: cards[s],
           rival: cards[otro(s as Seat)],
           outcomeMine: room.pending!.outcomes[s],

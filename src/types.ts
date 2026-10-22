@@ -85,6 +85,9 @@ export interface OnlineOutcome extends CardActionOutcome {
   fx: OnlineFx[]; // sonidos que debe reproducir el cliente
 }
 
+// DUELO en línea: en cada ronda un jugador ATACA y el otro DEFIENDE (se alternan)
+export type OnlineRole = "attacker" | "defender";
+
 export interface OnlineSnapshot {
   code: string;
   seat: 0 | 1;
@@ -95,6 +98,8 @@ export interface OnlineSnapshot {
   rivalMesa: number;
   hand: Card[]; // solo mi mano (la del rival nunca sale del servidor)
   myTurn: boolean; // true = puedo elegir carta ahora mismo
+  role: OnlineRole; // mi rol en esta ronda
+  announced: Card[]; // solo para el defensor: las 2 cartas anunciadas (la real y un señuelo)
   rivalConnected: boolean;
   // Encuentro ya resuelto: mi carta, la del rival y lo que hizo cada una
   pending: null | { mine: Card; rival: Card; outcomeMine: OnlineOutcome; outcomeRival: OnlineOutcome };
@@ -113,10 +118,14 @@ export interface OnlineSyncPayload {
 export interface OnlineChoicePayload {
   myChoiceId: string | null;
   rivalChose: boolean;
+  myTurn: boolean;
+  role: OnlineRole;
+  announced: Card[]; // solo el defensor recibe las 2 cartas anunciadas
 }
 
 // Ambos eligieron: las dos cartas se encuentran y se conoce el resultado de cada una
 export interface OnlineClashPayload {
+  role: OnlineRole; // mi rol en este encuentro
   mine: Card;
   rival: Card;
   outcomeMine: OnlineOutcome;

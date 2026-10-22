@@ -11,6 +11,7 @@ import {
   OnlineCloseReason,
   OnlineFx,
   OnlineChoicePayload,
+  OnlineRole,
   OnlineClashPayload,
   OnlineSnapshot,
   OnlineSyncPayload,
@@ -264,6 +265,7 @@ export default function App() {
   // En línea: los dos eligen carta en secreto y recién entonces se encuentran
   const [miEleccionId, setMiEleccionId] = useState<string | null>(null); // carta que ya elegí
   const [rivalEligio, setRivalEligio] = useState<boolean>(false); // el rival ya eligió (sin saber cuál)
+  const [rolOnline, setRolOnline] = useState<OnlineRole>("attacker"); // mi rol en esta ronda (duelo en línea)
   // 2 jugadores en un dispositivo: carta que eligió el JUGADOR 1 (oculta hasta que elija el JUGADOR 2)
   const [eleccionJ1, setEleccionJ1] = useState<Card | null>(null);
   // 2 jugadores en un dispositivo: pantalla de relevo ("Turno del JUGADOR X") que tapa las cartas
@@ -561,6 +563,8 @@ export default function App() {
     setCartasMesaIA(s.rivalMesa);
     setManoJugador(s.hand);
     setTurnoJugador(s.myTurn);
+    setRolOnline(s.role);
+    setAtaquesAnunciados(s.announced ?? []);
     setMiEleccionId(s.myChoiceId);
     setRivalEligio(s.rivalChose);
     setRivalConectado(s.rivalConnected);
@@ -642,7 +646,11 @@ export default function App() {
       setScreen("JUEGO");
       if (!resumed) {
         playRoundResetSound();
-        showCentralMessage("🃏 ¡Rival conectado! Los dos eligen una carta en secreto");
+        showCentralMessage(
+          snapshot.role === "attacker"
+            ? "🃏 ¡Rival conectado! Empiezas ATACANDO"
+            : "🃏 ¡Rival conectado! Tu rival empieza atacando: tú DEFIENDES"
+        );
       }
     };
 
@@ -652,7 +660,9 @@ export default function App() {
       setAnimatingCardId(null);
       setMiEleccionId(p.myChoiceId);
       setRivalEligio(p.rivalChose);
-      setTurnoJugador(p.myChoiceId === null);
+      setRolOnline(p.role);
+      setAtaquesAnunciados(p.announced ?? []); // el defensor ve las 2 cartas anunciadas
+      setTurnoJugador(p.myTurn);
     };
 
     // Los dos eligieron: las dos cartas se ponen boca abajo, se voltean y se ve qué pasó con cada una
@@ -664,15 +674,17 @@ export default function App() {
       setMiEleccionId(null);
       setRivalEligio(false);
       setTurnoJugador(false);
+      setAtaquesAnunciados([]);
+      setRolOnline(p.role);
       setManoJugador(p.state.hand);
       setCartasMesaJugador(p.state.meMesa);
       setCartasMesaIA(p.state.rivalMesa);
       playCardPlaySound();
       setActivePlayedCard({
         card: p.mine,
-        playedBy: "TÚ",
+        playedBy: p.role === "attacker" ? "TÚ · ATACAS" : "TÚ · DEFIENDES",
         isFlipped: false,
-        segunda: { card: p.rival, playedBy: "RIVAL" }
+        segunda: { card: p.rival, playedBy: p.role === "attacker" ? "RIVAL · DEFIENDE" : "RIVAL · ATACA" }
       });
       const t1 = setTimeout(() => {
         playCardFlipSound();
@@ -1543,7 +1555,11 @@ export default function App() {
                       ? "Las cartas se encuentran"
                       : miEleccionId
                       ? "Esperando al rival…"
-                      : "Elige tu carta"
+                      : turnoJugador
+                      ? rolOnline === "attacker"
+                        ? "⚔️ Eres el ATACANTE: elige tu ataque"
+                        : "🛡 Eres el DEFENSOR: elige tu defensa"
+                      : "⏳ El atacante está eligiendo…"
                     : modoDosJugadores
                     ? activePlayedCard
                       ? "Las cartas se encuentran"
@@ -1602,14 +1618,16 @@ export default function App() {
             />
 
             {/* 1 JUGADOR: la IA muestra la(s) carta(s) de ataque de las que lanzará UNA; el jugador elige su defensa */}
-            {!online && !activePlayedCard && ataquesAnunciados.length > 0 && (!modoDosJugadores || (!!eleccionJ1 && relevoLocal === null)) && (
+            {!activePlayedCard && ataquesAnunciados.length > 0 && (online ? rolOnline === "defender" && !miEleccionId : !modoDosJugadores || (!!eleccionJ1 && relevoLocal === null)) && (
               <div
                 className="absolute left-1/2 top-[17%] -translate-x-1/2 z-[35] flex flex-col items-center gap-2 pointer-events-none"
                 style={{ maxWidth: "calc(var(--vw) * 94)" }}
               >
                 <div className="px-4 py-1.5 rounded-2xl bg-emerald-950/90 border border-emerald-400/60 text-emerald-200 text-xs sm:text-sm font-bold text-center shadow-[0_6px_20px_rgba(0,0,0,0.7)]">
-                  {modoDosJugadores ? "⚔️" : "🤖"}{" "}
-                  {modoDosJugadores
+                  {modoDosJugadores || online ? "⚔️" : "🤖"}{" "}
+                  {online
+                    ? "Tu rival lanzará UNA de estas 2 cartas (50 % / 50 %)"
+                    : modoDosJugadores
                     ? `El JUGADOR ${rolAtacante} lanzará UNA de estas 2 cartas (50 % / 50 %)`
                     : ataquesAnunciados.length === 1
                     ? `La IA lanzará: ${ataquesAnunciados[0].nombre} (${ataquesAnunciados[0].objetivo})`
@@ -1637,41 +1655,24 @@ export default function App() {
               </div>
             )}
 
-            {/* En línea: los dos eligen en secreto; aquí se ve quién ya eligió (sin mostrar cuál carta) */}
-            {online && !activePlayedCard && (miEleccionId || rivalEligio) && (
+            {/* En línea: ya elegí mi carta (boca abajo) y espero a que el rival responda */}
+            {online && !activePlayedCard && miEleccionId && (
               <div
                 className="absolute left-1/2 top-[27%] -translate-x-1/2 z-[35] flex flex-col items-center gap-2 pointer-events-none"
                 style={{ maxWidth: "calc(var(--vw) * 94)" }}
               >
                 <div className="px-4 py-1.5 rounded-2xl bg-emerald-950/90 border border-emerald-400/60 text-emerald-200 text-xs sm:text-sm font-bold text-center shadow-[0_6px_20px_rgba(0,0,0,0.7)]">
-                  {miEleccionId
-                    ? rivalEligio
-                      ? "✅ Los dos eligieron… ¡las cartas se encuentran!"
-                      : "✅ Elegiste tu carta — esperando a que el rival elija…"
-                    : "⏳ El rival ya eligió. ¡Elige tu carta!"}
+                  {rolOnline === "attacker"
+                    ? "✅ Elegiste tu ataque — el defensor está eligiendo su defensa…"
+                    : "✅ Elegiste tu defensa — se descubren las cartas…"}
                 </div>
-                <div className="flex items-end justify-center gap-4">
-                  {miEleccionId && (
-                    <div style={{ width: "clamp(58px, calc(var(--vh) * 11), 100px)", aspectRatio: "195 / 275" }}>
-                      <img
-                        src="/img/dorso.png"
-                        alt="Tu carta"
-                        className="w-full h-full object-cover rounded-lg border-2 border-amber-400/80 shadow-[0_6px_16px_rgba(0,0,0,0.9)]"
-                        draggable={false}
-                      />
-                    </div>
-                  )}
-                  <div
-                    className={`${rivalEligio ? "" : "opacity-30"}`}
-                    style={{ width: "clamp(58px, calc(var(--vh) * 11), 100px)", aspectRatio: "195 / 275" }}
-                  >
-                    <img
-                      src="/img/dorso.png"
-                      alt="Carta del rival"
-                      className="w-full h-full object-cover rounded-lg border-2 border-amber-400/80 shadow-[0_6px_16px_rgba(0,0,0,0.9)]"
-                      draggable={false}
-                    />
-                  </div>
+                <div style={{ width: "clamp(58px, calc(var(--vh) * 11), 100px)", aspectRatio: "195 / 275" }}>
+                  <img
+                    src="/img/dorso.png"
+                    alt="Tu carta"
+                    className="w-full h-full object-cover rounded-lg border-2 border-amber-400/80 shadow-[0_6px_16px_rgba(0,0,0,0.9)]"
+                    draggable={false}
+                  />
                 </div>
               </div>
             )}

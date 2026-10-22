@@ -148,7 +148,7 @@ export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose }) => {
               <li>Defensa incorrecta: el ataque entra con su probabilidad y quita 1 vida. El Jolly Ataque quita como máximo 2 vidas.</li>
               <li>El Jolly Defensa siempre recupera +2 vidas (máximo 3). Las demás defensas no curan en este modo.</li>
               <li>Gana quien deje al rival sin vidas.</li>
-              <li>El modo en línea (cada uno en su dispositivo) sigue usando el sistema clásico, donde ambos eligen una carta a la vez.</li>
+              <li>Las mismas reglas valen jugando en línea desde dos dispositivos: el servidor reparte las cartas y anuncia las 2 cartas al defensor.</li>
             </ul>
           </div>
 
