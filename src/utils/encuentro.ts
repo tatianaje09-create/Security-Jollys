@@ -7,7 +7,7 @@ import type { Card, OnlineFx, OnlineOutcome, PlayerEntity } from "../types";
  * descubren y se encuentran. Solo entonces se sabe si el ataque funcionó:
  *   - Una DEFENSA solo cura (+1 vida) cuando el rival NO ataca en ese turno. Si hay un ataque en curso,
  *     la defensa solo sirve si es el control correcto (bloquea); si no, no cura y el ataque sigue su curso.
- *     Así un ataque y una defensa nunca se anulan entre sí. Jolly Defensa restaura todo.
+ *     Así un ataque y una defensa nunca se anulan entre sí. Jolly Defensa recupera +2 vidas (máx. 3) y restaura los pilares.
  *   - Si la defensa del rival es el control CORRECTO contra el ataque, el ataque queda bloqueado
  *     (Phishing↔2FA, Malware↔Antivirus, DDoS↔Firewall, Jolly Ataque↔Jolly Defensa).
  *   - Un ataque que no es bloqueado se juega con su probabilidad de siempre (60/70/65 %, Jolly 35 %).
@@ -131,17 +131,17 @@ function aplicarDefensa(c: Card, propio: PlayerEntity, rival: Card): OnlineOutco
   const sufijo = bloqueo ? " · Ataque bloqueado" : "";
 
   if (baseId(c) === "jolly_defensa") {
-    propio.vida = 3;
+    propio.vida = Math.min(3, propio.vida + 2);
     propio.confidencialidad = true;
     propio.integridad = true;
     propio.disponibilidad = true;
     return {
-      titulo: "🃏🛡 ¡Resiliencia Total: Jolly Defensa!",
-      detalle: `${propio.nombre} desplegó un plan de contingencia de respuesta rápida, restaurando la Tríada CIA al 100% (3 ♥).${nota}`,
+      titulo: "🃏🛡 ¡Jolly Defensa: Recuperación!",
+      detalle: `${propio.nombre} desplegó un plan de contingencia de respuesta rápida, restaurando la Tríada CIA y recuperando 2 ♥ (máximo 3).${nota}`,
       exito: true,
       tipo: "JOLLY",
-      impacto: `Restauración Total (3 ♥)${sufijo}`,
-      mensaje: "🃏🛡 ¡Recuperación Total con Jolly Defensa!",
+      impacto: `+2 ♥ Vidas${sufijo}`,
+      mensaje: "🃏🛡 ¡Jolly Defensa: +2 ♥!",
       fx: ["jolly"]
     };
   }
