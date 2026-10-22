@@ -11,6 +11,7 @@ import type { Card, OnlineFx, OnlineOutcome, PlayerEntity } from "../types";
  *   - Si la defensa del rival es el control CORRECTO contra el ataque, el ataque queda bloqueado
  *     (Phishing↔2FA, Malware↔Antivirus, DDoS↔Firewall, Jolly Ataque↔Jolly Defensa).
  *   - Un ataque que no es bloqueado se juega con su probabilidad de siempre (60/70/65 %, Jolly 35 %).
+ *     El Jolly Ataque quita como máximo 2 vidas, así que nunca elimina de golpe a quien tiene 3.
  *   - Primero se activan las defensas y después llegan los ataques.
  *
  * Este módulo lo usan el servidor (partidas en línea) y el cliente (2 jugadores en un dispositivo).
@@ -213,6 +214,8 @@ function aplicarAtaque(
     if (exito(35)) {
       let hits = 0;
       for (let i = 0; i < 3; i++) if (exito(70)) hits++;
+      // Tope: un solo Jolly Ataque nunca puede tumbar a una empresa que tiene 3 vidas (máximo -2)
+      hits = Math.min(hits, 2);
       if (hits > 0) {
         objetivo.vida = Math.max(0, objetivo.vida - hits);
         fx.push("hit");
