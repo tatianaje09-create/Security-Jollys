@@ -5,7 +5,9 @@ import type { Card, OnlineFx, OnlineOutcome, PlayerEntity } from "../types";
  *
  * Los dos jugadores eligen su carta en secreto; cuando ambos han elegido, las dos cartas se
  * descubren y se encuentran. Solo entonces se sabe si el ataque funcionó:
- *   - Una DEFENSA siempre cura a quien la juega (+1 vida y restaura su pilar; Jolly Defensa = todo).
+ *   - Una DEFENSA solo cura (+1 vida) cuando el rival NO ataca en ese turno. Si hay un ataque en curso,
+ *     la defensa solo sirve si es el control correcto (bloquea); si no, no cura y el ataque sigue su curso.
+ *     Así un ataque y una defensa nunca se anulan entre sí. Jolly Defensa restaura todo.
  *   - Si la defensa del rival es el control CORRECTO contra el ataque, el ataque queda bloqueado
  *     (Phishing↔2FA, Malware↔Antivirus, DDoS↔Firewall, Jolly Ataque↔Jolly Defensa).
  *   - Un ataque que no es bloqueado se juega con su probabilidad de siempre (60/70/65 %, Jolly 35 %).
@@ -145,15 +147,33 @@ function aplicarDefensa(c: Card, propio: PlayerEntity, rival: Card): OnlineOutco
 
   const def = DEFENSAS[c.nombre];
   if (def) {
-    propio.vida = Math.min(3, propio.vida + 1);
     propio[def.campo] = true;
+    const amenazado = esAtaque(rival);
+
+    // Sin ataque en curso: la defensa cura +1 vida
+    if (!amenazado) {
+      propio.vida = Math.min(3, propio.vida + 1);
+      return {
+        titulo: def.titulo,
+        detalle: def.detalle(propio.nombre),
+        exito: true,
+        tipo: "DEFENSA",
+        impacto: "+1 ♥ Vida",
+        mensaje: def.mensaje,
+        fx: ["defensa"]
+      };
+    }
+
+    // Con ataque en curso: NO cura. Si era el control correcto, bloquea; si no, el ataque sigue su curso
     return {
       titulo: def.titulo,
-      detalle: def.detalle(propio.nombre) + nota,
-      exito: true,
+      detalle: bloqueo
+        ? `${propio.nombre} activó el control correcto y frenó el ataque.${nota}`
+        : `${propio.nombre} activó ${c.nombre}, pero no era el control contra ${rival.nombre}: con un ataque en curso no recupera vida.`,
+      exito: bloqueo,
       tipo: "DEFENSA",
-      impacto: `+1 ♥ Vida${sufijo}`,
-      mensaje: def.mensaje,
+      impacto: bloqueo ? "Ataque bloqueado" : "Sin recuperación",
+      mensaje: bloqueo ? def.mensaje : `⚠️ ${c.nombre} no frenó el ${rival.nombre}`,
       fx: ["defensa"]
     };
   }
